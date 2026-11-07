@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Windows (Isaac Sim) <-> WSL2 (PX4, agent, stack) on one laptop, networkingMode=mirrored.
+     1. UDPv4 only: both sides share an IP, so Fast DDS would pick shared memory between them,
+        which cannot cross the VM boundary.
+     2. Unicast discovery on localhost: multicast discovery does not work across mirrored WSL
+        (nothing was discovered, not even PX4's local /fmu topics). Every participant announces
+        itself to 127.0.0.1 on the well-known discovery ports of participant ids 0..maxInitialPeersRange.
+     3. Datagrams <= 1400 bytes, loopback only: mirrored WSL drops UDP datagrams larger than 1500
+        bytes even on 127.0.0.1 (measured: 100-1500 B arrive, 4000+ B never do), and it announces
+        10.255.255.254 / host IPs that loop through Windows. Fast DDS discovery packets exceed
+        1500 B, so without this two WSL processes never discover each other. Fast DDS fragments
+        larger samples (camera images) itself.
+     Load on both sides with FASTRTPS_DEFAULT_PROFILES_FILE / FASTDDS_DEFAULT_PROFILES_FILE. -->
+<profiles xmlns="http://www.eprosima.com/XMLSchemas/fastRTPS_Profiles">
+  <transport_descriptors>
+    <transport_descriptor>
+      <transport_id>udp_only</transport_id>
+      <type>UDPv4</type>
+      <sendBufferSize>8388608</sendBufferSize>
+      <receiveBufferSize>8388608</receiveBufferSize>
+      <maxInitialPeersRange>64</maxInitialPeersRange>
+      <maxMessageSize>1400</maxMessageSize>
+      <interfaceWhiteList>
+        <address>127.0.0.1</address>
+      </interfaceWhiteList>
+    </transport_descriptor>
+  </transport_descriptors>
+  <participant profile_name="udp_only_participant" is_default_profile="true">
+    <rtps>
+      <userTransports>
+        <transport_id>udp_only</transport_id>
+      </userTransports>
+      <useBuiltinTransports>false</useBuiltinTransports>
+      <builtin>
+        <initialPeersList>
+          <locator>
+            <udpv4>
+              <address>127.0.0.1</address>
+            </udpv4>
+          </locator>
+        </initialPeersList>
+      </builtin>
+    </rtps>
+  </participant>
+</profiles>

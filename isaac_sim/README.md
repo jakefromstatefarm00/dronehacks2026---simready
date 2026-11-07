@@ -121,3 +121,29 @@ bash isaac_sim/fly_mission.sh ~/runs/square square        # run with SQUARE_ARGS
 python3 isaac_sim/encode_video.py ~/runs/square/flight-square-*/
 bash isaac_sim/stop_all.sh ~/runs/square
 ```
+
+## Windows laptop (Isaac on Windows, PX4 + stack in WSL2)
+
+On the Windows laptop, Isaac Sim 5.1 runs natively and PX4 plus the stack run in WSL2 Ubuntu 24.04
+with `networkingMode=mirrored`.
+
+1. In WSL: `source isaac_sim/windows/laptop_env.sh`, then start `run_px4.sh`.
+2. On Windows: `powershell -File isaac_sim\windows\run_isaac.ps1 -Course -Textured`. This uses
+   the D3D12 renderer; Vulkan crashes on an RTX 5070 Ti Laptop.
+3. In WSL: start `run_stack.sh`.
+
+Both sides load `isaac_sim/fastdds_udp_only.xml`. **That profile is what makes DDS discovery
+work on this setup.** Mirrored WSL drops UDP datagrams over 1500 bytes, even on 127.0.0.1
+(measured: 100–1500 B arrive, 4000 B and up never do). Fast DDS discovery packets are larger
+than that, so without the profile no two processes discover each other, not even two in WSL.
+The profile does three things:
+
+- uses UDPv4 only, on 127.0.0.1 only;
+- caps messages at 1400 B;
+- uses unicast discovery to 127.0.0.1.
+
+With it, a WSL process sees PX4's `/fmu/out/*` (about 20 Hz) and Isaac's
+`/drone1/{left,right}/color/image_raw` from Windows (about 7–10 Hz).
+
+Still open on the laptop: x86 Isaac ROS needs the CUDA 13 NPP libraries (`libnppial.so.13` and
+related) for `gxf_isaac_tensorops`. Without them, the cuVSLAM image converter cannot load.
