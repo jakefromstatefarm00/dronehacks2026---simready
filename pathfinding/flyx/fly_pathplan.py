@@ -102,7 +102,7 @@ def main(argv=None):
     import rclpy
     from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
     from rclpy.clock import Clock, ClockType
-    from rclpy.executors import MultiThreadedExecutor
+    from rclpy.executors import SingleThreadedExecutor
     from rclpy.node import Node
     from rclpy.parameter import Parameter
     from rclpy.qos import qos_profile_sensor_data
@@ -141,7 +141,7 @@ def main(argv=None):
             self.tel = Telemetry(now=0.0)
             self.poses = deque(maxlen=300)      # (ROS time, NED position, q): ~3 s of odometry
             self.poses_lock = threading.Lock()  # odometry thread appends, depth thread reads
-            self.depth_stats = {"frames": 0, "matched": 0, "fallback": 0, "turning": 0, "max_odom_delay_s": 0.0}
+            self.depth_stats = {"frames": 0, "matched": 0, "fallback": 0, "unmatched": 0, "turning": 0, "max_odom_delay_s": 0.0}
             self.failsafe_flags = None
             self.px4_modes, self.stalls = [], []
             self.offsets = deque(maxlen=200)    # arrival (ROS clock) - PX4 sample time, last ~2 s
@@ -155,7 +155,7 @@ def main(argv=None):
             # steady clock: a stalled or slow /clock must not stop the setpoint stream (PX4 drops
             # out of Offboard after COM_OF_LOSS_T without it)
             steady = Clock(clock_type=ClockType.STEADY_TIME)
-            self.create_timer(.2, self.on_plan, callback_group=planning, clock=steady)
+            # planning (blocks on the planner process for up to ~1 s) runs on its own thread, see main()
             self.create_timer(.05, self.on_control, callback_group=control, clock=steady)
             self.px4_ref = None                 # (latest odometry timestamp us, monotonic arrival)
             self.status_pub = self.create_publisher(String, "~/status", 10)
@@ -279,6 +279,9 @@ def main(argv=None):
                     dyaw = yaw_from_q_ned(q) - yaw_from_q_ned(q0)
                     rate = abs(math.atan2(math.sin(dyaw), math.cos(dyaw))) / max(t - t0, .05)
                     return odom_to_course(mission.frame, pos, q), rate
+            if self.depth_stats["matched"] >= 20:      # stamps do match normally: this frame fell in a
+                self.depth_stats["unmatched"] += 1      # gap in the pose history (a stall) - skip it
+                return None, 0.0
             self.depth_stats["fallback"] += 1           # unstamped / other clock: latest pose
             return mission.pose_course, 0.0
 
@@ -288,7 +291,10 @@ def main(argv=None):
             self.depth_stats["frames"] += 1
             if self.depth_stats["frames"] % 100 == 1:
                 log({"kind": "depth", "t": self.now(), **self.depth_stats, "quality": planner.depth_quality})
-            (xyz, _, rotation), rate = self.pose_at(msg.header.stamp.sec + msg.header.stamp.nanosec * 1e-9)
+            pose, rate = self.pose_at(msg.header.stamp.sec + msg.header.stamp.nanosec * 1e-9)
+            if pose is None:
+                return
+            xyz, _, rotation = pose
             if rate > MAX_TURN_RATE:
                 self.depth_stats["turning"] += 1
                 return
@@ -380,8 +386,25 @@ def main(argv=None):
     signal.signal(signal.SIGINT, interrupt)
     signal.signal(signal.SIGTERM, interrupt)
     node = FlyNode()
-    executor = MultiThreadedExecutor(num_threads=4)
+    # Single-threaded executor: every ROS callback is short. The MultiThreadedExecutor burnt ~73 % of
+    # a core on this message load (single: ~13 %), and a CPU-hungry process is the one a crowded lab
+    # machine starves (FlyX run 7: 86 stalls up to 1.95 s, even before arming).
+    executor = SingleThreadedExecutor()
     executor.add_node(node)
+    planning_stop = threading.Event()
+
+    def planning_loop():                        # 5 Hz, outside the executor
+        while not planning_stop.is_set():
+            t0 = time.monotonic()
+            try:
+                node.on_plan()
+            except Exception:
+                import traceback
+                log({"kind": "error", "where": "planning", "error": traceback.format_exc()})
+            planning_stop.wait(max(0.0, .2 - (time.monotonic() - t0)))
+
+    planning_thread = threading.Thread(target=planning_loop, daemon=True)
+    planning_thread.start()
     # the executor spins on its own thread; the main thread only waits for the end (or Ctrl-C)
     def spin():
         try:
@@ -408,6 +431,8 @@ def main(argv=None):
              "depth_quality": planner.depth_quality,
              "cleared": planner.cleared, "planner_events": planner.events})
         print_summary(mission, planner, node, a.output / "journal.jsonl")
+        planning_stop.set()
+        planning_thread.join(timeout=3.0)       # finish the step in flight before closing its pipe
         executor.shutdown(timeout_sec=1.0)
         planner.close()
         node.destroy_node()

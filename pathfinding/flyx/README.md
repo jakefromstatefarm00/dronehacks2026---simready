@@ -120,6 +120,13 @@ hands over after 0.5 s. The journal is written by its own thread (never blocks t
 `fake_px4.py` now copies PX4's failsafe-and-return; test harness freezes our processes 1.5-2 s every
 8 s: 4/4 missions complete, 7-11 freezes each (worst 1.95 s).
 
+**CPU.** rclpy's MultiThreadedExecutor burnt ~73 % of a core on our message load (single-threaded:
+~13 %; measured with the fake PX4 + depth), and a CPU-hungry process is the one a crowded lab
+machine starves. The node now uses a SingleThreadedExecutor (all callbacks are short) and planning
+runs on its own thread: the ROS process went from ~78 % to ~16 % of a core, odometry delivery delay
+from up to 0.9 s to 0.09 s, and depth frames without a capture-time pose from 5-12 % to <1 %
+(those are now skipped, not placed with the latest pose). 4/4 missions with injected freezes.
+
 Tested: `tests/test_flyx_mission.py`; full ROS wiring in Jazzy against `fake_px4.py`
 (status at the lab's slow rates): course completed, 3 commands (Offboard, arm, land);
 shadow + Ctrl-C sends nothing; `--execute` + SIGTERM mid-flight sends Land.
