@@ -1,0 +1,14 @@
+{"t": 0.014, "kind": "recorder_start"}
+{"t": 0.27, "kind": "px4_arming_state", "value": 1}
+{"t": 0.27, "kind": "px4_nav_state", "value": 4}
+{"t": 0.27, "kind": "vo_state", "value": 1}
+{"t": 0.42, "kind": "skybeta_state", "value": {"armed": false, "landed": null, "nav_state_name": "-1", "offboard_active": false}, "clamped": []}
+{"t": 1.22, "kind": "skybeta_state", "value": {"armed": false, "landed": true, "nav_state_name": "AUTO_LOITER", "offboard_active": false}, "clamped": []}
+{"t": 15.065, "kind": "px4_nav_state", "value": 14}
+{"t": 15.22, "kind": "skybeta_state", "value": {"armed": false, "landed": true, "nav_state_name": "OFFBOARD", "offboard_active": true}, "clamped": ["min_altitude"]}
+{"t": 17.241, "kind": "px4_arming_state", "value": 2}
+{"t": 17.42, "kind": "skybeta_state", "value": {"armed": true, "landed": true, "nav_state_name": "OFFBOARD", "offboard_active": true}, "clamped": []}
+{"t": 20.82, "kind": "skybeta_state", "value": {"armed": true, "landed": false, "nav_state_name": "OFFBOARD", "offboard_active": true}, "clamped": []}
+{"t": 73.97, "kind": "px4_nav_state", "value": 18}
+{"t": 74.02, "kind": "skybeta_state", "value": {"armed": true, "landed": false, "nav_state_name": "AUTO_LAND", "offboard_active": false}, "clamped": []}
+{"t": 197.057, "kind": "recorder_stop", "frames": 923}

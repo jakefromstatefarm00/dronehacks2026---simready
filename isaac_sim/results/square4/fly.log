@@ -1,0 +1,7 @@
+[fly 16:01:59] request offboard
+std_srvs.srv.Trigger_Response(success=True, message='sent VEHICLE_CMD_DO_SET_MODE(1, 6). This does NOT arm; PX4 will reject it unless the offboard stream is already running.')
+
+[fly 16:02:02] arming (pxh> commander arm), try 1
+[fly 16:02:59] mission holding at the end: pilot lands
+[fly 16:05:00] disarmed (arming_state 2)
+[fly 16:05:00] done

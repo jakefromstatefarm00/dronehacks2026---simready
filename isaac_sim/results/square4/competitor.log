@@ -1,0 +1,82 @@
+[INFO] [launch]: All log files can be found below /home/suraj/.ros/log/2026-11-07-16-01-44-836668-promaxgb10-6c88-2458097
+[INFO] [launch]: Default logging verbosity is set to INFO
+[INFO] [flight_interface-1]: process started with pid [2458101]
+[INFO] [square_mission-2]: process started with pid [2458102]
+[square_mission-2] [0m[INFO] [1794067305.154892679] [competitor_example]: competitor_example ready: hover 1.50 m for 5 s, then a 5.0 m square (arrive within 0.60 m).
+[square_mission-2] Waiting for the safety pilot to arm, then switch to Position...[0m
+[flight_interface-1] [0m[INFO] [1794067305.181266980] [flight_interface]: skybeta flight interface up @ 10.0 Hz
+[flight_interface-1]   envelope: altitude 0.30-3.00 m, speed <= 1.50 m/s
+[flight_interface-1]   px4_msgs msg dir: /home/suraj/dronehacks-runtime/ros_ws/install/px4_msgs/share/px4_msgs/msg
+[flight_interface-1]   resolved topics:
+[flight_interface-1]     offboard_control_mode    /fmu/in/offboard_control_mode
+[flight_interface-1]     trajectory_setpoint      /fmu/in/trajectory_setpoint
+[flight_interface-1]     vehicle_command          /fmu/in/vehicle_command
+[flight_interface-1]     vehicle_land_detected    /fmu/out/vehicle_land_detected
+[flight_interface-1]     vehicle_local_position   /fmu/out/vehicle_local_position
+[flight_interface-1]     vehicle_status           /fmu/out/vehicle_status_v1
+[flight_interface-1]   mode requests: ENABLED (sim only!)
+[flight_interface-1]   Offboard on the switch to Position after arming: ON[0m
+[flight_interface-1] [0m[INFO] [1794067305.181659111] [flight_interface]: This node never arms: the safety pilot does, on RC.[0m
+[square_mission-2] [0m[INFO] [1794067305.247433472] [competitor_example]: no /visual_slam/tracking/odometry yet -- is cuVSLAM up and tracking? Nothing will be commanded until it is.[0m
+[flight_interface-1] [0m[INFO] [1794067306.307342430] [flight_interface]: PX4 link up: nav_state=4 (AUTO_LOITER), armed=False[0m
+[flight_interface-1] [0m[INFO] [1794067306.441882519] [flight_interface]: envelope origin captured at ENU (0.00, 0.00, 0.00); altitude 0.30-3.00 m, speed <= 1.50 m/s[0m
+[square_mission-2] [0m[INFO] [1794067306.447370213] [competitor_example]: holding at the current position until the safety pilot arms and switches to Position.[0m
+[flight_interface-1] [33m[WARN] [1794067306.448545471] [flight_interface]: pose setpoint clamped (min_altitude): (0.00, 0.00, 0.00) -> (0.00, 0.00, 0.30) ENU[0m
+[square_mission-2] [0m[INFO] [1794067306.566379532] [competitor_example]: the flight interface is CLAMPING our setpoints (min_altitude) -- we are asking for something outside the safety envelope {'min_altitude_m': 0.3, 'max_altitude_m': 3.0, 'max_speed_mps': 1.5}[0m
+[flight_interface-1] [33m[WARN] [1794067308.448838022] [flight_interface]: pose setpoint clamped (min_altitude): (0.00, 0.00, 0.00) -> (0.00, 0.00, 0.30) ENU[0m
+[flight_interface-1] [33m[WARN] [1794067310.547575145] [flight_interface]: pose setpoint clamped (min_altitude): (0.00, 0.00, 0.00) -> (0.00, 0.00, 0.30) ENU[0m
+[flight_interface-1] [33m[WARN] [1794067312.547819413] [flight_interface]: pose setpoint clamped (min_altitude): (0.00, 0.00, 0.00) -> (0.00, 0.00, 0.30) ENU[0m
+[flight_interface-1] [33m[WARN] [1794067314.548695384] [flight_interface]: pose setpoint clamped (min_altitude): (0.00, 0.00, 0.00) -> (0.00, 0.00, 0.30) ENU[0m
+[flight_interface-1] [33m[WARN] [1794067316.648060213] [flight_interface]: pose setpoint clamped (min_altitude): (0.00, 0.00, 0.00) -> (0.00, 0.00, 0.30) ENU[0m
+[flight_interface-1] [33m[WARN] [1794067318.648254776] [flight_interface]: pose setpoint clamped (min_altitude): (0.00, 0.00, 0.00) -> (0.00, 0.00, 0.30) ENU[0m
+[flight_interface-1] [33m[WARN] [1794067320.201854559] [flight_interface]: offboard mode requested - sent VEHICLE_CMD_DO_SET_MODE(1, 6). This does NOT arm; PX4 will reject it unless the offboard stream is already running.[0m
+[flight_interface-1] [0m[INFO] [1794067320.211644225] [flight_interface]: nav_state AUTO_LOITER -> OFFBOARD[0m
+[square_mission-2] [0m[INFO] [1794067320.447730851] [competitor_example]: Offboard active. Mission start at ENU (0.00, 0.00, 0.00); climbing to 1.50 m.[0m
+[flight_interface-1] [33m[WARN] [1794067322.466053139] [flight_interface]: auto offboard: armed: waiting for the switch to Position[0m
+[square_mission-2] [0m[INFO] [1794067341.447834161] [competitor_example]: hover complete -- flying the 5.0 m square, corner 1/4[0m
+[square_mission-2] [0m[INFO] [1794067364.447929473] [competitor_example]: corner reached -- next: 2/4 at ENU (5.00, 5.00, 1.50)[0m
+[square_mission-2] [0m[INFO] [1794067369.247879189] [competitor_example]: corner reached -- next: 3/4 at ENU (0.00, 5.00, 1.50)[0m
+[square_mission-2] [0m[INFO] [1794067373.847691984] [competitor_example]: corner reached -- next: 4/4 at ENU (0.00, 0.00, 1.50)[0m
+[square_mission-2] [0m[INFO] [1794067378.247670669] [competitor_example]: square complete -- holding. The safety pilot can take over and land.[0m
+[flight_interface-1] [0m[INFO] [1794067379.116874084] [flight_interface]: nav_state OFFBOARD -> AUTO_LAND[0m
+[square_mission-2] [33m[WARN] [1794067379.247894385] [competitor_example]: Offboard lost -- the pilot has taken control. Mission paused. Offboard does not return until the vehicle is disarmed and armed again.[0m
+[flight_interface-1] Traceback (most recent call last):
+[flight_interface-1]   File "/home/suraj/dronehacks-runtime/skybeta_ws/install/skybeta_flight_interface/lib/skybeta_flight_interface/flight_interface", line 33, in <module>
+[flight_interface-1]     sys.exit(load_entry_point('skybeta-flight-interface==0.1.0', 'console_scripts', 'flight_interface')())
+[flight_interface-1]              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[flight_interface-1]   File "/home/suraj/dronehacks-runtime/skybeta_ws/install/skybeta_flight_interface/lib/python3.12/site-packages/skybeta_flight_interface/flight_interface.py", line 635, in main
+[flight_interface-1]     rclpy.spin(node)
+[flight_interface-1]   File "/opt/ros/jazzy/lib/python3.12/site-packages/rclpy/__init__.py", line 247, in spin
+[flight_interface-1]     executor.spin_once()
+[flight_interface-1]   File "/opt/ros/jazzy/lib/python3.12/site-packages/rclpy/executors.py", line 926, in spin_once
+[flight_interface-1]     self._spin_once_impl(timeout_sec)
+[flight_interface-1]   File "/opt/ros/jazzy/lib/python3.12/site-packages/rclpy/executors.py", line 907, in _spin_once_impl
+[flight_interface-1]     handler, entity, node = self.wait_for_ready_callbacks(
+[flight_interface-1]                             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[flight_interface-1]   File "/opt/ros/jazzy/lib/python3.12/site-packages/rclpy/executors.py", line 877, in wait_for_ready_callbacks
+[flight_interface-1]     return next(self._cb_iter)
+[flight_interface-1]            ^^^^^^^^^^^^^^^^^^^
+[flight_interface-1]   File "/opt/ros/jazzy/lib/python3.12/site-packages/rclpy/executors.py", line 785, in _wait_for_ready_callbacks
+[flight_interface-1]     raise ExternalShutdownException()
+[flight_interface-1] rclpy.executors.ExternalShutdownException
+[square_mission-2] Traceback (most recent call last):
+[square_mission-2]   File "/home/suraj/organizer-sim/stack_ws/install/competitor_example/lib/competitor_example/square_mission", line 33, in <module>
+[square_mission-2]     sys.exit(load_entry_point('competitor-example==0.1.0', 'console_scripts', 'square_mission')())
+[square_mission-2]              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[square_mission-2]   File "/home/suraj/organizer-sim/stack_ws/install/competitor_example/lib/python3.12/site-packages/competitor_example/square_mission.py", line 293, in main
+[square_mission-2]     rclpy.spin(node)
+[square_mission-2]   File "/opt/ros/jazzy/lib/python3.12/site-packages/rclpy/__init__.py", line 247, in spin
+[square_mission-2]     executor.spin_once()
+[square_mission-2]   File "/opt/ros/jazzy/lib/python3.12/site-packages/rclpy/executors.py", line 926, in spin_once
+[square_mission-2]     self._spin_once_impl(timeout_sec)
+[square_mission-2]   File "/opt/ros/jazzy/lib/python3.12/site-packages/rclpy/executors.py", line 907, in _spin_once_impl
+[square_mission-2]     handler, entity, node = self.wait_for_ready_callbacks(
+[square_mission-2]                             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[square_mission-2]   File "/opt/ros/jazzy/lib/python3.12/site-packages/rclpy/executors.py", line 877, in wait_for_ready_callbacks
+[square_mission-2]     return next(self._cb_iter)
+[square_mission-2]            ^^^^^^^^^^^^^^^^^^^
+[square_mission-2]   File "/opt/ros/jazzy/lib/python3.12/site-packages/rclpy/executors.py", line 785, in _wait_for_ready_callbacks
+[square_mission-2]     raise ExternalShutdownException()
+[square_mission-2] rclpy.executors.ExternalShutdownException
+[ERROR] [square_mission-2]: process has died [pid 2458102, exit code 1, cmd '/home/suraj/organizer-sim/stack_ws/install/competitor_example/lib/competitor_example/square_mission --ros-args -r __node:=competitor_example --params-file /tmp/launch_params_09y_pm8d'].
+[ERROR] [flight_interface-1]: process has died [pid 2458101, exit code 1, cmd '/home/suraj/dronehacks-runtime/skybeta_ws/install/skybeta_flight_interface/lib/skybeta_flight_interface/flight_interface --ros-args -r __node:=flight_interface --params-file /tmp/launch_params_avnm0aw6'].
