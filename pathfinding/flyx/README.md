@@ -84,3 +84,10 @@ hands over after 0.5 s. The journal is written by its own thread (never blocks t
 8 s: 4/4 missions complete, 7-11 freezes each (worst 1.95 s).
 
 Parameters of the node: `../ros2/dronehacks_pathplan/README.md`.
+
+**CPU (native run 7 follow-up, now in the Sky Beta node too).** rclpy's MultiThreadedExecutor burnt
+~73 % of a core on this message load (single-threaded: ~13 %), and a CPU-hungry process is the one a
+crowded lab machine starves. The node uses a SingleThreadedExecutor (all callbacks are short) and
+plans on its own thread: the ROS process went from ~78 % to ~16 % of a core, odometry delivery delay
+from up to 0.9 s to 0.09 s, and depth frames without a capture-time pose are skipped instead of
+placed with the latest pose.
