@@ -1,0 +1,51 @@
+{
+  "kind": "source_time_flight_video_not_grade",
+  "title": "FlyX square main.py on PX4 SITL + OpenVINS EV, DroneHacks course (Gazebo, v123)",
+  "interval_sim_s": [
+    125.262,
+    156.342
+  ],
+  "inputs": {
+    "observer": {
+      "manifest_sha256": "72d885217bbe40a01685ab18a745d7a4a1b211712c8d5bbfc4ef98f828606d49",
+      "frames": 148
+    },
+    "onboard": {
+      "manifest_sha256": "e7bdf9bfd426d920ad19ecb023a308b89a0121731474e5debe69f90a55452b06",
+      "frames": 149
+    }
+  },
+  "playback_fps": 15,
+  "video_sha256": "39ea615a83a6cc31dada422bab8c3174e84221aa04e9822e0e134ee69bca94f1",
+  "ffmpeg_command": [
+    "/usr/bin/ffmpeg",
+    "-y",
+    "-hide_banner",
+    "-f",
+    "concat",
+    "-safe",
+    "0",
+    "-i",
+    "artifacts/gb10-sky-beta-course-v123/flight-video/observer.ffconcat",
+    "-f",
+    "concat",
+    "-safe",
+    "0",
+    "-i",
+    "artifacts/gb10-sky-beta-course-v123/flight-video/onboard.ffconcat",
+    "-filter_complex",
+    "[0:v]scale=960:-2,setsar=1,fps=15[o];[1:v]scale=960:-2,setsar=1,fps=15[b];[o][b]vstack=inputs=2:shortest=1,format=yuv420p[v]",
+    "-map",
+    "[v]",
+    "-c:v",
+    "libx264",
+    "-crf",
+    "22",
+    "-preset",
+    "medium",
+    "-movflags",
+    "+faststart",
+    "artifacts/gb10-sky-beta-course-v123/flight-video/flight.mp4"
+  ],
+  "limitations": "Frames held across dropped-frame gaps; no invented motion. Native telemetry, not playback length, defines flight and checkpoint timing."
+}
