@@ -97,6 +97,7 @@ class MissionConfig:
     # Visual odometry dies on fast turns: Suraj's flyx_course data had 30 of 40 VIO losses above
     # 0.35 rad/s, and 3/3 Gazebo completions at 0.25; our FlyX run 6 lost xy after turning in place.
     yaw_rate_max: float = .25              # rad/s cap on the commanded heading's rate of change
+    slow_turn_deg: float = 60.0            # carrot shrinks to 30 % as the heading error reaches this
 
 
 class Mission:
@@ -169,7 +170,7 @@ class Mission:
             return None
         xyz, yaw, _ = self.pose_course
         cmd = self.planner.update(xyz[:2], yaw)
-        self.target = target_from_command(cmd, xyz[:2], yaw, self.cfg.carrot_m)
+        self.target = target_from_command(cmd, xyz[:2], yaw, self._carrot_for(cmd, yaw))
         if cmd.mode == "turn":
             # hold the spot where the turning began: re-holding "here" every step let the vehicle
             # drift 11 cm during a look-around in FlyX run 6, toward a wall
@@ -180,6 +181,15 @@ class Mission:
             self._turn_xy = None
         self.planner_status = cmd.mode
         return cmd
+
+    def _carrot_for(self, cmd, yaw):
+        """Setpoint distance: shorter while the nose is still turning toward the route, so the
+        drone slows through corners instead of swinging wide (0.5 m aligned, 0.15 m at 60 deg)."""
+        c = self.cfg
+        if cmd.mode != "move" or cmd.yaw is None:
+            return c.carrot_m
+        off = abs(float(np.arctan2(np.sin(cmd.yaw - yaw), np.cos(cmd.yaw - yaw))))
+        return c.carrot_m * float(np.clip(1.0 - off / np.deg2rad(c.slow_turn_deg), .3, 1.0))
 
     def planning_allowed(self):
         """Map and plan only in flight (or in shadow): on the ground the camera sits 5 cm up and

@@ -375,3 +375,12 @@ def test_centres_over_the_pad_before_landing():
     assert np.allclose(out.setpoint[0], pad_ned)
     out = m.tick(tel(t + .1, **{**AIR, "position_ned": tuple(pad_ned)}))  # arrived
     assert m.state == "LAND" and out.command.command == CMD_NAV_LAND and "from its centre" in m.events[-1]["note"]
+
+
+def test_carrot_shrinks_while_the_nose_turns():
+    m = Mission(FakePlanner(), MissionConfig())
+    aligned = PlanCommand("move", np.array([[0.0, 0.0], [1.0, 0.0]]), 0.0)
+    turning = PlanCommand("move", np.array([[0.0, 0.0], [1.0, 0.0]]), np.deg2rad(45))
+    assert m._carrot_for(aligned, 0.0) == pytest.approx(.5)
+    assert m._carrot_for(turning, 0.0) == pytest.approx(.15)                  # 0.3 x 0.5 at >= 42 deg off
+    assert m._carrot_for(PlanCommand("move", aligned.path, np.deg2rad(20)), 0.0) == pytest.approx(.5 * (1 - 20 / 60))

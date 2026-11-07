@@ -127,6 +127,14 @@ runs on its own thread: the ROS process went from ~78 % to ~16 % of a core, odom
 from up to 0.9 s to 0.09 s, and depth frames without a capture-time pose from 5-12 % to <1 %
 (those are now skipped, not placed with the latest pose). 4/4 missions with injected freezes.
 
+**Turning.** With the heading capped at 0.25 rad/s, the planner's 30 deg "look before moving"
+rule stopped the drone to turn in place 21-26 times per flight (49-58 % of NAVIGATE), and a stop
+followed by turning in place is what lost visual odometry in Suraj's Gazebo v131. It now keeps
+moving while the nose turns up to 60 deg off (`TURN_IN_PLACE_DEG`, planner_process.py) and the
+setpoint shrinks with the heading error (0.5 m aligned -> 0.15 m at 42+ deg, `slow_turn_deg`):
+12-15 stops, 24-35 %, NAVIGATE 41-45 s; 4/4 fake-PX4 missions with freezes; offline 13/13 at both
+30 and 60 deg with the same worst clearance (0.339 m).
+
 Tested: `tests/test_flyx_mission.py`; full ROS wiring in Jazzy against `fake_px4.py`
 (status at the lab's slow rates): course completed, 3 commands (Offboard, arm, land);
 shadow + Ctrl-C sends nothing; `--execute` + SIGTERM mid-flight sends Land.
