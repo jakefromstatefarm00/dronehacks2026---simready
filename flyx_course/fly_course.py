@@ -30,9 +30,12 @@ on any fault; Ctrl-C / lab Stop lands. Journal: flyx_course/runs/course-<time>/j
 Start ON THE LAUNCH MARK facing up the first corridor (course +y), after Reset world.
 """
 SPEED_SCALE = 0.65   # friend's validated default for this route (Gazebo: 61.8 s, 0 contacts)
-LEAD_S = 0.6        # PX4 position target leads the route reference by this (clamped at the next waypoint)
-FF_FRAC = 0.4       # fraction of the reference velocity sent as feedforward
-LEASH_M = 0.25       # freeze the route setpoint when the drone lags it by more than this
+LEAD_S = 1.0        # PX4 position target leads the reference by v * LEAD_S (clamped at the next
+                    # waypoint): ~1/MPC_XY_P, so PX4 tracks the reference without feedforward
+FF_FRAC = 0.0       # velocity feedforward fraction (0: position targets only, like pathfinding/flyx)
+LEASH_M = 0.35       # freeze the route reference when the drone lags it by more than this
+HEADING_LOOKAHEAD_M = 0.7   # face the route this far ahead of the reference (pathfinding/flyx's
+                            # lookahead): turns start before corners and are spread out
 YAW_RATE_MAX = 0.25  # rad/s cap on the controller's yaw rate (theirs: 0.7). Visual odometry dies on
                      # fast turns: FlyX run 1 of this script lost xy ~3 s after the first maze corner at
                      # 0.5 rad/s; our failure maps had 30/40 deaths at yaw rates > 0.35 rad/s.
@@ -225,6 +228,17 @@ class CourseMission:
         return (self.frame.to_ned(p), self.frame.vel_to_ned(tuple(x * FF_FRAC for x in v)),
                 self.frame.yaw_to_ned(self.v_yaw), -self.v_yaw_rate)   # NED yawspeed = -course yaw rate
 
+    def route_point_ahead(self, d):
+        """Point d metres ahead of the reference along the remaining route (course frame)."""
+        c = self.ctrl
+        pts = [self.v_pos] + [w["position"] for w in c.waypoints[c.waypoint_index:]]
+        for a, b in zip(pts, pts[1:]):
+            L = dist(a, b)
+            if L >= d and L > 1e-9:
+                return tuple(a[i] + (b[i] - a[i]) * d / L for i in range(3))
+            d -= L
+        return tuple(pts[-1]) if len(pts) > 1 else None
+
     def in_corner_zone(self):
         """Distance to the sharp corner the reference is heading for, if within CORNER_ZONE_M."""
         c = self.ctrl
@@ -359,7 +373,13 @@ class CourseMission:
                 self.v_vel = tuple(x * cap / sp for x in self.v_vel)
                 self.ctrl.last_command = self.v_vel   # the controller continues from what was flown
         self.v_pos = tuple(p + v * dt for p, v in zip(self.v_pos, self.v_vel))
-        self.v_yaw_rate = max(-self.yaw_rate_max, min(self.yaw_rate_max, cmd.yaw_rate))
+        # heading: face the route HEADING_LOOKAHEAD_M ahead (instead of the controller's yaw toward the
+        # current waypoint, which turns only once the corner is reached), rate-limited for VIO
+        ahead = self.route_point_ahead(HEADING_LOOKAHEAD_M)
+        want = self.v_yaw
+        if ahead is not None and ((ahead[0] - self.v_pos[0]) ** 2 + (ahead[1] - self.v_pos[1]) ** 2) ** .5 > .05:
+            want = atan2(ahead[1] - self.v_pos[1], ahead[0] - self.v_pos[0])
+        self.v_yaw_rate = max(-self.yaw_rate_max, min(self.yaw_rate_max, 1.5 * wrap(want - self.v_yaw)))
         self.v_yaw = wrap(self.v_yaw + self.v_yaw_rate * dt)
         return self.state, self.setpoint(), None, f"{cmd.phase} wp {self.ctrl.waypoint_index + 1}/{len(self.ctrl.waypoints)}"
 

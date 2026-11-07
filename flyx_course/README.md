@@ -92,15 +92,23 @@ footprint proxy has a radius of 0.28 m.
 | v133 | `--corner-deg 180` (no corner braking) | complete | 0.184 m | 0.09 m |
 | v134 | corner braking, yaw ≤ 0.5 rad/s | visual odometry lost on the same maze leg as v131; the divergence guard landed (truth 3.8 m from the pad) | — | — |
 | v135 | corner braking, yaw ≤ 0.5 rad/s | complete | 0.298 m | 0.05 m |
-| **v136** | **current: + yaw ≤ 0.25 rad/s** | **complete** | **0.297 m** | **0.05 m** |
-| **v137** | current | **complete** (ran 0.15 m low through the window: height estimate) | 0.154 m | 0.05 m |
-| **v138** | current | **complete** (visual odometry drifted 0.9 m at the maze corner, then recovered) | 0.181 m | 0.05 m |
+| v136 | + yaw ≤ 0.25 rad/s | **complete** | **0.297 m** | **0.05 m** |
+| v137 | yaw ≤ 0.25 | complete (ran 0.15 m low through the window: height estimate) | 0.154 m | 0.05 m |
+| v138 | yaw ≤ 0.25 | complete (visual odometry drifted 0.9 m at the maze corner, then recovered) | 0.181 m | 0.05 m |
+| v139 | pathfinding/flyx `upload_to_flyx.py`, for comparison | complete | 0.336 m | 0.25 m |
+| **v140** | **current: lookahead heading, position-only targets, leash 0.35 m** | **complete** | **0.334 m** | **0.03 m** |
+| **v141** | **current** | **complete** | **0.317 m** | **0.02 m** |
 
-**Current version (yaw rate ≤ 0.25 rad/s): 3 of 3 complete, about 50–62 s in the air.** At
-0.5 rad/s, visual odometry was lost twice (v131, v134), both times right after a 90° corner
-turn. FlyX run 1 of this script did the same: xy invalid about 3 s after the first maze corner.
-Our earlier failure maps had 30 of 40 visual-odometry deaths at yaw rates above 0.35 rad/s.
-The close passes in v137 and v138 came from the estimate, not from control.
+**Current version: borrows pathfinding/flyx's smoothness.**
+- The nose faces a point 0.7 m ahead on the route, at ≤ 0.25 rad/s, so turns start before
+  corners.
+- PX4 gets position-only targets, leading the reference by v × 1.0 s and clamped at the next
+  waypoint.
+- The leash is 0.35 m.
+
+Gazebo v140 and v141 both completed, with ≥ 0.317 m from every wall and landing 0.02–0.03 m
+from the pad. Earlier versions lost visual odometry right after 90° corner turns at 0.5 rad/s
+(v131, v134, FlyX runs 1–2).
 
 The divergence guard was added after v131. In that run the estimate ran away for about 8 s
 before PX4 flagged it.
