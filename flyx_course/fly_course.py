@@ -412,7 +412,6 @@ def main(argv=None):
     ap.add_argument("--corner-deg", type=float, default=CORNER_DEG,
                     help="brake into turns sharper than this (180: never)")
     ap.add_argument("--odometry-topic", default="/visual_slam/tracking/odometry")
-    ap.add_argument("--wall-clock", action="store_true", help="tests without a simulator /clock")
     a, _unknown = ap.parse_known_args(argv)
     return main_skybeta(a)
 
@@ -424,7 +423,6 @@ def main_skybeta(a):
     from rclpy.clock import Clock, ClockType
     from rclpy.executors import MultiThreadedExecutor
     from rclpy.node import Node
-    from rclpy.parameter import Parameter
     from rclpy.qos import qos_profile_sensor_data
     from rclpy.signals import SignalHandlerOptions
     from geometry_msgs.msg import PoseStamped
@@ -452,7 +450,6 @@ def main_skybeta(a):
     class SkybetaCourseNode(Node):
         def __init__(self):
             super().__init__("flyx_course")
-            self.set_parameters([Parameter("use_sim_time", value=not a.wall_clock)])
             self.tel, self.last_state, self.last_tel_log, self.last_tick = Telemetry(), None, 0.0, None
             self.last_odom = None
             self.tel.pose_frame = POSE_FRAME_NED   # health check: frames are handled by EnuFrame
