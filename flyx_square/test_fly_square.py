@@ -158,3 +158,38 @@ def test_odometry_outage_lands():
     _fly(px4, mission, frozen_odom=(16.0, 200.0))
     land = [e for e in mission.events if e.get("to") == "LAND"]
     assert land and "odometry lost" in land[0]["note"]
+
+
+# FlyX lab run 2 (2026-11-07, journal): measured pauses, as (start offset after arming s, length s)
+# odometry and the program's own control loop stalled together (control_gap up to 1.75 s);
+# local_position paused up to 2.37 s; sim time kept running (~0.8x real time).
+LAB_RUN2_ODOM = [(1.4, 0.31), (2.0, 0.45), (2.5, 0.62), (3.3, 0.43), (13.6, 0.41), (14.2, 0.41), (14.9, 1.41)]
+LAB_RUN2_LOCAL = [(2.0, 0.70), (3.4, 1.49), (13.6, 0.43), (14.9, 2.37)]
+LAB_RUN2_CONTROL = [(1.7, 0.70), (2.6, 0.62), (14.6, 1.22), (16.4, 1.75)]
+
+
+def _in(t, spans):
+    return any(a <= t < a + d for a, d in spans)
+
+
+def test_lab_run2_pause_pattern_completes():
+    """Replays run 2's measured pauses: odometry, local position, and stalls of the program
+    itself (no ticks, so no setpoints) relative to arming. The old version landed; this holds."""
+    px4, mission = FakePX4(), m.SquareMission()
+    sp = cmd = None
+    t, t_arm = 0.0, None
+    while t < 300 and mission.state not in ("DONE", "FAILED", "TAKEN_OVER"):
+        rel = None if t_arm is None else t - t_arm
+        px4.step(t, sp, cmd, stale_odom=rel is not None and _in(rel, LAB_RUN2_ODOM))
+        if rel is not None and _in(rel, LAB_RUN2_LOCAL):
+            px4.tel.local_t = px4.tel.local_t if px4.tel.local_t < t else t - .05
+            px4.tel.local_t = min(px4.tel.local_t, t_arm + max(a for a, d in LAB_RUN2_LOCAL if a <= rel))
+        if rel is None or not _in(rel, LAB_RUN2_CONTROL):
+            _, sp, cmd, _ = mission.tick(px4.tel)
+        else:
+            cmd = None                      # the program is stalled: nothing new is sent
+        if t_arm is None and mission.state == "FLY":
+            t_arm = t
+        t += .05
+    assert mission.state == "DONE", mission.events[-3:]
+    assert any("pause" in e for e in mission.events)

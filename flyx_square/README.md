@@ -77,3 +77,14 @@ reproduce run 1 (0.5 s pause after arming) and run 2 (1.2 s pause mid-square): b
 Shutdown no longer prints "cannot use Destroyable" (executor joined before the node is destroyed).
 
 Re-flown after the run-2 fix in Gazebo: v126, square complete, landed + disarmed, exit 0.
+
+### What the run-2 journal showed
+
+Pauses are constant in the lab, not occasional: odometry gaps of 0.15-1.4 s every few seconds,
+`local_position` gaps up to 2.4 s, and they coincide with the program's own 20 Hz control loop
+not running (`control_gap` up to 1.75 s) while sim time keeps advancing (~0.8x real time): the
+whole companion process is starved of CPU at times. `test_lab_run2_pause_pattern_completes`
+replays those measured gaps (including the stalls, during which no setpoint is sent) and the
+current version completes the square. Remaining risk: a stall longer than PX4's Offboard-loss
+timeout makes PX4 take over (the script then stops commanding, `TAKEN_OVER`); nothing in the
+program can prevent a container-level stall.
