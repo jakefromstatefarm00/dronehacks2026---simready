@@ -21,7 +21,7 @@ corridor, and get the team's OK. Ctrl-C makes the sim pilot land.
    It uses the drone's setting, `auto_offboard_on_arm`: arming then switching to Position starts
    Offboard. It also enables `allow_mode_request` (SITL only) for `PILOT=direct`.
 2. **The program,** on the Sky Beta contract. It never arms, never changes mode and never lands.
-   At the end it holds over the pad and reports `HOLD` (suraj) or `LAND` (jolie).
+   At the end it holds over the pad and reports `HOLD` (jolie: once centred, `ready_to_land`).
 3. **`team_ws/src/team_mission/team_mission/sim/sim_pilot.py`** (Jake's). It is **SIM ONLY**
    and refuses to start on the drone. It does the safety pilot's job, the real way: arm in
    Altitude, then switch to Position. The interface then enters Offboard on its own. When the

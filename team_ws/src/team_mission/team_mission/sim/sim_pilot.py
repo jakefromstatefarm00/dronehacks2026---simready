@@ -120,7 +120,7 @@ class SimPilot(Node):
             ready = st.get('px4_link') and st.get('local_enu') is not None
             if self.require_mission:      # the mission is up and streaming hold setpoints
                 ready = ready and (self.mission.get('phase') == 'DORMANT'
-                                   or self.mission.get('state') in ('STREAM', 'WAIT_OFFBOARD'))
+                                   or self.mission.get('state') in ('STREAM', 'WAIT_FOR_OFFBOARD'))
             if ready and dt > self.wait_s:
                 self.goto('MODE')
         elif self.step_name == 'MODE':
@@ -157,7 +157,8 @@ class SimPilot(Node):
             if self.was_armed and not armed:
                 self.get_logger().info(f'disarmed {t - self.flight_t:.1f} s after arming. Flight over.')
                 self.goto('DONE')
-            elif self.mission.get('state') in self.land_states:
+            elif (self.mission.get('ready_to_land') if 'ready_to_land' in self.mission
+                  else self.mission.get('state') in self.land_states):
                 self.get_logger().info(f'mission reports {self.mission.get("state")} '
                                        f'({self.mission.get("note", "")}): pilot lands')
                 self.command(CMD_LAND)

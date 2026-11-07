@@ -6,7 +6,7 @@ Everything needed to run, test and change Jolie's pathfinding. It flies as **`jo
 | | What | Where |
 |---|---|---|
 | **The algorithm** | Theta\* re-planning on a map built from the published layout and corrected by a depth camera | `pathplan/` |
-| **The flight program** | state machine + ROS node on the Sky Beta contract (no `/fmu`) | `flyx/mission.py`, `flyx/fly_pathplan.py` |
+| **The flight program** | the Sky Beta ROS node (no `/fmu`), and its generated single file | `ros2/dronehacks_pathplan/`, `flyx/pathplan_mission.py` |
 | **The simulation** | Offline benchmark (seconds) | `pathplan/harness.py` |
 
 ## Quick start
@@ -48,10 +48,13 @@ bash flyx_skybeta/run.sh jolie                  # FlyX / sim, from the repo root
 python3 jolie_course/jolie_course.py            # on the drone (the pilot arms)
 ```
 
-`flyx/fly_pathplan.py` is the ROS node. It reads `/visual_slam/tracking/odometry` and
-`/skybeta/state` and publishes `/skybeta/setpoint/pose`. It never arms, never changes mode and
-never lands. `flyx/mission.py` is the state machine; it is pure Python and unit-tested. See
-[`flyx/README.md`](flyx/README.md) and [`../jolie_course/README.md`](../jolie_course/README.md).
+`ros2/dronehacks_pathplan/` is the ROS node, and it is also a colcon package. It reads
+`/visual_slam/tracking/odometry` and `/skybeta/state` and publishes `/skybeta/setpoint/pose`. It
+never arms, never changes mode and never lands. `tools/build_single_file.py` embeds it and the
+planner into `flyx/pathplan_mission.py`, which is what `jolie_course` runs. See
+[`ros2/dronehacks_pathplan/README.md`](ros2/dronehacks_pathplan/README.md) and
+[`../jolie_course/README.md`](../jolie_course/README.md). The history of the earlier
+native-PX4 FlyX runs, whose fixes are now in the node, is in [`flyx/README.md`](flyx/README.md).
 
 ## The simulation
 
@@ -92,7 +95,9 @@ coordinates.
 
 ```
 pathplan/        the algorithm + offline benchmark
-flyx/            mission.py (state machine), fly_pathplan.py (ROS node, Sky Beta), px4_link.py (frames)
+ros2/            dronehacks_pathplan: the Sky Beta ROS node (source)
+flyx/            pathplan_mission.py (the node as one file, generated), README (FlyX run history)
+tools/           build_single_file.py
 course/ config/  the published course (OBJ) and its gate list
 drl/             the team's OBJ -> collision-primitives loader (used by pathplan)
 tests/

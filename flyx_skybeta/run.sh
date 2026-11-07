@@ -19,8 +19,9 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 WHAT="${1:-suraj}"; shift || true
 case "$WHAT" in
   suraj) PROG=(python3 -u "$ROOT/suraj_course/suraj_course.py" "$@"); STATUS=/suraj_course/status ;;
-  jolie) PROG=(python3 -u "$ROOT/jolie_course/jolie_course.py" --depth-topic /camera/depth/image_raw "$@")
-         STATUS=/jolie_course/status ;;
+  jolie) PROG=(python3 -u "$ROOT/jolie_course/jolie_course.py" --ros-args
+               -p depth_topic:=/camera/depth/image_raw "$@")
+         STATUS=/dronehacks_pathplan/status ;;
   *) echo "usage: run.sh suraj|jolie [args]"; exit 2 ;;
 esac
 FI_SRC="$ROOT/skybeta/src/skybeta_flight_interface"
