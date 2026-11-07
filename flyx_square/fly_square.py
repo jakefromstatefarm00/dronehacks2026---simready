@@ -63,6 +63,7 @@ import time
 CMD_DO_SET_MODE, CMD_ARM_DISARM, CMD_NAV_LAND = 176, 400, 21
 ARMED, DISARMED = 2, 1
 NAV_OFFBOARD = 14
+FMU_IN_SETPOINTS = ("/fmu/in/offboard_control_mode", "/fmu/in/trajectory_setpoint")
 POSE_FRAME_NED = 1
 NAN3 = [nan, nan, nan]
 OUT_TOPICS = {"odom": ("vehicle_odometry", "VehicleOdometry"), "status": ("vehicle_status", "VehicleStatus"),
@@ -98,6 +99,7 @@ class Telemetry:
         self.arming_state, self.nav_state = DISARMED, 0
         self.landed = False
         self.xy_valid = self.z_valid = False
+        self.foreign = ""   # another node publishing PX4 setpoints (e.g. skybeta_flight_interface)
 
 
 class SquareMission:
@@ -139,6 +141,8 @@ class SquareMission:
             return "odometry never received"
         if now - tel.odom_t > (ODOM_HOLD_S if ground else OUTAGE_S):
             return f"odometry lost ({now - tel.odom_t:.2f} s)"
+        if tel.foreign:
+            return "another program commands PX4: " + tel.foreign
         if tel.pose_frame != POSE_FRAME_NED:
             return f"odometry frame {tel.pose_frame} is not NED"
         slow = 3.0 if ground else SLOW_LOST_S
@@ -342,6 +346,21 @@ def main(argv=None):
 
         def discover(self):
             graph = self.get_topic_names_and_types()
+            # This program is the only thing that may publish PX4 setpoints. If another publisher
+            # exists (the Sky Beta stack's skybeta_flight_interface owns /fmu/in on the drone and in
+            # the skybeta sim; use /skybeta/setpoint/* there, not this script), the two would fight
+            # over the Offboard control flags: refuse to arm, or land if it appears in flight.
+            own = 0 if a.shadow else 1
+            found = [f"{n} other publisher(s) on {t}" for t in FMU_IN_SETPOINTS
+                     for n in [self.count_publishers(t) - own] if n > 0]
+            if found and any(t.startswith("/skybeta/") for t, _ in graph):
+                found.append("/skybeta/* topics present: the Sky Beta flight interface stack is running")
+            foreign = "; ".join(found)
+            if foreign != self.tel.foreign:
+                (self.get_logger().error if foreign else self.get_logger().info)(
+                    foreign or "no other PX4 setpoint publisher")
+                log({"kind": "foreign_publishers", "note": foreign})
+            self.tel.foreign = foreign
             for key, (base, typ) in OUT_TOPICS.items():
                 if key not in self.subs:
                     topic = find_topic(graph, base, f"px4_msgs/msg/{typ}")

@@ -14,7 +14,11 @@ climb 0.9 m -> forward 0.6 m -> up 0.6 m -> back 0.6 m -> down 0.6 m -> land (na
 - **Native PX4**, like the lab's working takeoff/hover/land example: it publishes
   `/fmu/in/offboard_control_mode`, `/fmu/in/trajectory_setpoint`, `/fmu/in/vehicle_command`
   and reads `/fmu/out/vehicle_odometry`, `vehicle_status(_v1)`, `vehicle_land_detected`,
-  `vehicle_local_position(_v1)` (version suffix discovered). It is not a skybeta node.
+  `vehicle_local_position(_v1)` (version suffix discovered). It is not a skybeta node: on the
+  drone and in the skybeta sim, `skybeta_flight_interface` owns `/fmu/in/*` ("do not publish to
+  `/fmu/in/*` yourself"). The script checks for that. If any other publisher exists on
+  `/fmu/in/offboard_control_mode` or `trajectory_setpoint`, it refuses to arm; if one appears in
+  flight, it lands.
 - **Why a vertical square.** A flat square does not fit at the launch mark: the first
   corridor is ~1 m wide and with Sky Beta's 0.28 m radius only its centre line keeps
   >= 0.4 m from the walls (published-map clearance). Straight up the corridor the clearance

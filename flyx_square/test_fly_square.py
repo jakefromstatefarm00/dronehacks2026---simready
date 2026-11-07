@@ -226,3 +226,30 @@ def test_fresh_invalid_estimate_still_lands():
         t += .05
     land = [e for e in mission.events if e.get("to") == "LAND"]
     assert land and "estimator invalid" in land[0]["note"]
+
+
+def test_other_setpoint_publisher_on_the_ground_never_arms():
+    """skybeta_flight_interface (or anything else) already publishing /fmu/in setpoints: do not fight it."""
+    px4, mission = FakePX4(), m.SquareMission()
+    px4.tel.foreign = "1 other publisher(s) on /fmu/in/offboard_control_mode"
+    sp = cmd = None
+    t = 0.0
+    while t < 40:
+        px4.step(t, sp, cmd)
+        _, sp, cmd, _ = mission.tick(px4.tel)
+        t += .05
+    assert mission.state == "WAIT_HEALTH" and px4.tel.arming_state == m.DISARMED
+
+
+def test_other_setpoint_publisher_in_flight_lands():
+    px4, mission = FakePX4(), m.SquareMission()
+    sp = cmd = None
+    t = 0.0
+    while t < 200 and mission.state not in ("DONE", "FAILED", "TAKEN_OVER"):
+        px4.step(t, sp, cmd)
+        if mission.state == "FLY" and t > 16.0:
+            px4.tel.foreign = "1 other publisher(s) on /fmu/in/trajectory_setpoint"
+        _, sp, cmd, _ = mission.tick(px4.tel)
+        t += .05
+    land = [e for e in mission.events if e.get("to") == "LAND"]
+    assert land and "another program commands PX4" in land[0]["note"]
