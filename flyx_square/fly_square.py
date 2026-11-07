@@ -19,11 +19,15 @@ Sequence (the FlyX-tested flow of pathfinding/flyx/mission.py):
     WAIT_HEALTH  fresh odometry, status, local position xy/z valid, landed + disarmed, SETTLE_S (10 s)
     STREAM       hold setpoints for 1 s (PX4 needs a stream before Offboard)
     OFFBOARD -> ARM -> TAKEOFF -> legs of the square (setpoint moves at SPEED_MPS) -> LAND -> DONE
-Message pauses: the lab's PX4 -> ROS stream pauses for up to ~1 s at a time (FlyX runs: 0.69 s,
-1.1 s). PX4 keeps estimating and flying through them, so a pause in odometry (> ODOM_HOLD_S) or in
-local position HOLDS: the last setpoint keeps streaming (PX4 holds position on its own EKF) and the
-square's progress is frozen until messages return. Land only on a real outage: odometry or local
-position missing > OUTAGE_S, status > 3 s, estimator invalid, a corner not reached in
+Message pauses (FlyX lab journals, 2026-11-07): odometry pauses 0.15-1.8 s every few seconds; the
+slow topics (vehicle_status, land_detected, local_position) can all go silent together for ~6 s
+while odometry keeps flowing and PX4 keeps flying in Offboard. So, in the air:
+  * odometry is the only liveness signal: a pause > ODOM_HOLD_S HOLDS (the last setpoint keeps
+    streaming, PX4 holds on its own EKF, the square's progress freezes until it returns);
+    > OUTAGE_S without odometry lands;
+  * the slow topics are latest-known state: a fresh message saying the estimator is invalid lands,
+    PX4 leaving Offboard stops commanding; silence alone only lands after SLOW_LOST_S.
+On the ground (before arming) every topic must be fresh. Also lands on a corner not reached in
 LEG_TIMEOUT_S of flying time, or total flight over MAX_FLIGHT_S.
 If PX4 leaves Offboard by itself (failsafe, RC) it stops commanding (TAKEN_OVER).
 Ctrl-C / SIGTERM (lab Stop) while airborne -> Land.
@@ -40,7 +44,8 @@ TOLERANCE_M = 0.12   # corner reached when PX4's position is this close (3-D)
 LEG_TIMEOUT_S = 20.0
 MAX_FLIGHT_S = 120.0
 ODOM_HOLD_S = 0.4    # odometry this old: hold (freeze the square) until it returns
-OUTAGE_S = 3.0       # odometry / local position missing this long: a real outage -> land
+OUTAGE_S = 3.0       # odometry missing this long in the air: a real outage -> land
+SLOW_LOST_S = 10.0   # status / local position silent this long in the air -> land (lab: 6 s seen)
 SETTLE_S = 10.0     # healthy + landed this long before Offboard/arm. 2 s (pathfinding/flyx) was too
                      # short in our Gazebo run v122 (OpenVINS lost all features at liftoff 4 s after the
                      # rig set the drone down); v123 with a longer settle flew the square cleanly.
@@ -115,34 +120,32 @@ class SquareMission:
 
     @staticmethod
     def paused(tel):
-        """Telemetry pause (hold, don't land): odometry older than ODOM_HOLD_S or local position > 1 s.
+        """Odometry pause (hold, don't land): odometry older than ODOM_HOLD_S.
 
-        FlyX lab 2026-11-07: run 1 landed 2.8 s after arming on a 0.3 s odometry gap, run 2 landed
-        after 20 s of good flight on a 1.08 s gap (sim time advanced 1.1 s too). PX4 publishes
-        vehicle_odometry continuously from its EKF, so these are pauses in the lab's PX4 -> ROS
-        stream, not estimator failures: hold through them, land only past OUTAGE_S.
+        FlyX lab 2026-11-07: run 1 landed 2.8 s after arming on a 0.3 s odometry gap, run 2 after
+        20 s on a 1.08 s gap, run 3 after 15 s on a 6 s vehicle_status silence while odometry kept
+        coming. PX4 flies on through all of these: hold on odometry pauses, land only on outages.
         """
         now = tel.now
         if tel.odom_t is not None and now - tel.odom_t > ODOM_HOLD_S:
             return f"odometry paused {now - tel.odom_t:.2f} s"
-        if tel.local_t is not None and now - tel.local_t > 1.0:
-            return f"local position paused {now - tel.local_t:.2f} s"
         return ""
 
     @staticmethod
-    def unhealthy(tel):
-        """Reasons to land (airborne) / not to start (on the ground)."""
+    def unhealthy(tel, ground=False):
+        """Reasons to land (in the air) / not to start (ground=True: every topic must be fresh)."""
         now = tel.now
         if tel.odom_t is None:
             return "odometry never received"
-        if now - tel.odom_t > OUTAGE_S:
+        if now - tel.odom_t > (ODOM_HOLD_S if ground else OUTAGE_S):
             return f"odometry lost ({now - tel.odom_t:.2f} s)"
         if tel.pose_frame != POSE_FRAME_NED:
             return f"odometry frame {tel.pose_frame} is not NED"
-        if tel.status_t is None or now - tel.status_t > 3.0:
-            return "vehicle_status stale"
-        if tel.local_t is None or now - tel.local_t > OUTAGE_S:
-            return "local position lost"
+        slow = 3.0 if ground else SLOW_LOST_S
+        if tel.status_t is None or now - tel.status_t > slow:
+            return f"vehicle_status silent {(now - tel.status_t) if tel.status_t else 0:.1f} s"
+        if tel.local_t is None or now - tel.local_t > slow:
+            return f"local position silent {(now - tel.local_t) if tel.local_t else 0:.1f} s"
         if not (tel.xy_valid and tel.z_valid):
             return f"estimator invalid (xy {tel.xy_valid}, z {tel.z_valid})"
         if not all(isfinite(v) for v in tel.position):
@@ -164,7 +167,7 @@ class SquareMission:
 
     def tick(self, tel):
         now = tel.now
-        bad = self.unhealthy(tel)
+        bad = self.unhealthy(tel, ground=self.state == "WAIT_HEALTH")
         s = self.state
         if s == "WAIT_HEALTH":
             pause = self.paused(tel)

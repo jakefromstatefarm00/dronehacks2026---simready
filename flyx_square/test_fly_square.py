@@ -193,3 +193,36 @@ def test_lab_run2_pause_pattern_completes():
         t += .05
     assert mission.state == "DONE", mission.events[-3:]
     assert any("pause" in e for e in mission.events)
+
+
+def test_lab_run3_slow_topics_silent_6s_completes():
+    """FlyX lab run 3: vehicle_status, land_detected and local_position silent ~6 s together
+    (from ~11 s after arming) while odometry kept coming and PX4 stayed in Offboard. The previous
+    version landed on "vehicle_status stale"; slow-topic silence must not land."""
+    px4, mission = FakePX4(), m.SquareMission()
+    sp = cmd = None
+    t, t_arm = 0.0, None
+    while t < 300 and mission.state not in ("DONE", "FAILED", "TAKEN_OVER"):
+        px4.step(t, sp, cmd)
+        rel = None if t_arm is None else t - t_arm
+        if rel is not None and 11.0 <= rel < 17.0:              # slow topics silent, odometry fine
+            px4.tel.status_t = px4.tel.local_t = px4.tel.landed_t = t_arm + 11.0
+        _, sp, cmd, _ = mission.tick(px4.tel)
+        if t_arm is None and mission.state == "FLY":
+            t_arm = t
+        t += .05
+    assert mission.state == "DONE", mission.events[-3:]
+
+
+def test_fresh_invalid_estimate_still_lands():
+    px4, mission = FakePX4(), m.SquareMission()
+    sp = cmd = None
+    t = 0.0
+    while t < 200 and mission.state not in ("DONE", "FAILED", "TAKEN_OVER"):
+        px4.step(t, sp, cmd)
+        if mission.state == "FLY" and t > 16.0:
+            px4.tel.xy_valid = False                          # a fresh message says: invalid
+        _, sp, cmd, _ = mission.tick(px4.tel)
+        t += .05
+    land = [e for e in mission.events if e.get("to") == "LAND"]
+    assert land and "estimator invalid" in land[0]["note"]

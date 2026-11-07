@@ -88,3 +88,14 @@ replays those measured gaps (including the stalls, during which no setpoint is s
 current version completes the square. Remaining risk: a stall longer than PX4's Offboard-loss
 timeout makes PX4 take over (the script then stops commanding, `TAKEN_OVER`); nothing in the
 program can prevent a container-level stall.
+
+## FlyX lab run 3 (2026-11-07) and the fix
+
+Took off and flew ~15 s, then `FLY -> LAND: unhealthy: vehicle_status stale`. The journal shows
+vehicle_status, land_detected and local_position all silent for ~6 s at the same moment while
+odometry kept arriving and PX4 stayed in Offboard. It had also frozen the square twice on
+local_position pauses (1.3 s, 1.5 s) while odometry was fine. Now, in the air, odometry is the
+only liveness signal (hold on a > 0.4 s pause, land after 3 s without it); the slow topics are
+latest-known state: a fresh "estimator invalid" still lands, PX4 leaving Offboard still stops
+commanding, but silence alone only lands after 10 s. Before arming, every topic must still be
+fresh. Tests replay runs 1-3 (11 pass).
