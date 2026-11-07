@@ -1,10 +1,13 @@
 """Build the residual copies of Jolie's FlyX-proven files (the originals are read, never written).
 
-    python3 jolie_course/build_residual_copy.py [--policy residual/policy.json]
+    python3 jolie_course/build_residual_copy.py [--policy residual/policy.json] [--drift-policy residual/policy_drift.json]
 
 writes
     jolie_course/upload_to_flyx_residual.py          from upload_to_flyx.py          (native PX4, FlyX)
     jolie_course/upload_to_flyx_residual_skybeta.py  from upload_to_flyx_skybeta.py  (Sky Beta contract)
+    jolie_course/upload_to_flyx_drift_residual.py    from residual/bases/upload_to_flyx_drift.py
+        (Jolie's map-alignment build, origin/jolie-drift-correction f7b97d3), with the second residual
+        trained on that base; only if --drift-policy exists
 
 Each copy is its original byte for byte (every embedded module in _SOURCES, the map, the planner
 process, the PX4 / Sky Beta I/O) plus four insertions:
@@ -23,8 +26,10 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 REPO = HERE.parent
 RUNTIME = REPO / "residual" / "runtime.py"
-TARGETS = {"upload_to_flyx.py": "upload_to_flyx_residual.py",
-           "upload_to_flyx_skybeta.py": "upload_to_flyx_residual_skybeta.py"}
+# (source file, output name in jolie_course/, which policy)
+TARGETS = [(HERE / "upload_to_flyx.py", "upload_to_flyx_residual.py", "proven"),
+           (HERE / "upload_to_flyx_skybeta.py", "upload_to_flyx_residual_skybeta.py", "proven"),
+           (REPO / "residual" / "bases" / "upload_to_flyx_drift.py", "upload_to_flyx_drift_residual.py", "drift")]
 
 HEADER = '''"""RESIDUAL COPY of {src}: Jolie's planner + a small trained residual on the carrot.
 
@@ -78,17 +83,27 @@ def _residual_choice(no_residual, carrot_m):
 '''
 
 
-def build(policy_path):
-    runtime = RUNTIME.read_text(encoding="utf-8")
-    assert "'''" not in runtime, "runtime.py must not contain triple single quotes"
+def _policy(policy_path):
     params = json.loads(Path(policy_path).read_text(encoding="utf-8"))
     meta = params.get("meta", {})
     policy = json.dumps({k: params[k] for k in ("format", "obs_dim", "layers")} | {"meta": meta})
     assert "'''" not in policy
-    note = f"{Path(policy_path).name} (level {meta.get('level', '?')}, iteration {meta.get('it', '?')})"
+    return policy, f"{Path(policy_path).name} (level {meta.get('level', '?')}, iteration {meta.get('it', '?')})"
+
+
+def build(policy_path, drift_policy_path=None):
+    runtime = RUNTIME.read_text(encoding="utf-8")
+    assert "'''" not in runtime, "runtime.py must not contain triple single quotes"
+    policies = {"proven": _policy(policy_path)}
+    if drift_policy_path is not None and Path(drift_policy_path).exists():
+        policies["drift"] = _policy(drift_policy_path)
     written = []
-    for src_name, out_name in TARGETS.items():
-        s = (HERE / src_name).read_text(encoding="utf-8")
+    for src, out_name, which in TARGETS:
+        if which not in policies:
+            continue
+        policy, note = policies[which]
+        src_name = src.name
+        s = src.read_text(encoding="utf-8")
         original = s
 
         def rep(a, b, label):
@@ -130,4 +145,6 @@ def build(policy_path):
 if __name__ == "__main__":
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--policy", type=Path, default=REPO / "residual" / "policy.json")
-    build(ap.parse_args().policy)
+    ap.add_argument("--drift-policy", type=Path, default=REPO / "residual" / "policy_drift.json")
+    a = ap.parse_args()
+    build(a.policy, a.drift_policy)

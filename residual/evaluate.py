@@ -32,16 +32,17 @@ def _init_worker():
 
 def _run(task):
     from residual import sim
-    level, seed, params, residual = task
+    level, seed, params, residual, *rest = task
+    variant = rest[0] if rest else "proven"
     try:
-        r = sim.run_episode(level, seed, params, residual=residual)
+        r = sim.run_episode(level, seed, params, residual=residual, variant=variant)
         d = asdict(r)
         d.pop("traj", None)
         d["fitness"] = r.fitness()
         return d
     except Exception as e:                      # a crash in the simulator is reported, never hidden
         import traceback
-        return {"level": level, "seed": seed, "residual": residual, "error": traceback.format_exc(),
+        return {"level": level, "seed": seed, "residual": residual, "variant": variant, "error": traceback.format_exc(),
                 "complete": False, "contact": False, "fitness": -1e3}
 
 
@@ -59,18 +60,20 @@ def run_tasks(tasks, workers=None):
     return pool(workers).map(_run, tasks, chunksize=1)
 
 
-def summarize(rows):
-    """Per (level, arm) metrics. Clearance stats are over each run's minimum true clearance."""
+def summarize(rows, by_variant=False):
+    """Per (level, residual) metrics, or (level, variant, residual) with ``by_variant``.
+    Clearance stats are over each run's minimum true clearance; time = NAVIGATE (sim s)."""
     out = {}
     for r in rows:
-        out.setdefault((r["level"], r["residual"]), []).append(r)
+        key = (r["level"], r.get("variant", "proven"), r["residual"]) if by_variant else (r["level"], r["residual"])
+        out.setdefault(key, []).append(r)
     table = {}
-    for (lv, arm), rs in sorted(out.items()):
+    for key, rs in sorted(out.items()):
         done = [r for r in rs if r.get("complete")]
         t = np.array([r["course_time"] for r in done]) if done else np.array([np.nan])
         mc = np.array([r["min_clearance"] for r in rs if r.get("min_clearance") is not None
                        and math.isfinite(r.get("min_clearance", float("nan")))])
-        table[(lv, arm)] = {
+        table[key] = {
             "n": len(rs), "errors": sum("error" in r for r in rs),
             "completion": len(done) / len(rs),
             "time_mean": float(np.nanmean(t)), "time_p90": float(np.nanpercentile(t, 90)) if done else float("nan"),
@@ -87,11 +90,12 @@ def summarize(rows):
     return table
 
 
-def accept(table, levels):
+def accept(table, levels, variant=None):
     """Never worse than the base on completion or contacts at any level; better on time or clearance."""
     verdict, better = {}, False
     for lv in levels:
-        b, r = table.get((lv, False)), table.get((lv, True))
+        k = (lambda arm: (lv, arm)) if variant is None else (lambda arm: (lv, variant, arm))
+        b, r = table.get(k(False)), table.get(k(True))
         if not b or not r:
             continue
         ok = r["completion"] >= b["completion"] and r["contacts"] <= b["contacts"]
@@ -102,23 +106,25 @@ def accept(table, levels):
     return all(v["not_worse"] for v in verdict.values()) and better, verdict
 
 
-def markdown(table, levels, verdict=None):
+def markdown(table, levels, verdicts=None, variants=("proven",)):
     from residual.sim import LEVEL
     head = ("| level | arm | runs | completion | time mean / p90 (s) | min clearance min / p5 (m) | time < 0.30 m (s) "
             "| contacts | VIO risk (exp. events) | VIO events |\n|---|---|---|---|---|---|---|---|---|---|")
     lines = [head]
     for lv in levels:
-        for arm in (False, True):
-            m = table.get((lv, arm))
-            if not m:
-                continue
-            lines.append(f"| {lv} | {'residual' if arm else 'base'} | {m['n']} | {100 * m['completion']:.0f} % | "
-                         f"{m['time_mean']:.1f} / {m['time_p90']:.1f} | {m['clear_min']:.3f} / {m['clear_p5']:.3f} | "
-                         f"{m['below_0p30_s']:.1f} | {m['contacts']} | {m['vio_risk']:.3f} | {m['vio_events']} |")
+        for v in variants:
+            for arm in (False, True):
+                m = table.get((lv, v, arm))
+                if not m:
+                    continue
+                name = f"{v} base" + (" + residual" if arm else "")
+                lines.append(f"| {lv} | {name} | {m['n']} | {100 * m['completion']:.0f} % | "
+                             f"{m['time_mean']:.1f} / {m['time_p90']:.1f} | {m['clear_min']:.3f} / {m['clear_p5']:.3f} | "
+                             f"{m['below_0p30_s']:.1f} | {m['contacts']} | {m['vio_risk']:.3f} | {m['vio_events']} |")
     lines.append("")
     lines += [f"- **{lv}**: {LEVEL[lv].description}" for lv in levels]
-    if verdict:
-        lines.append("")
+    for name, (ok, verdict) in (verdicts or {}).items():
+        lines += ["", f"**{name}: accepted = {ok}**"]
         lines += [f"- {lv}: not worse = {v['not_worse']}, faster = {v['faster']}, wider p5 clearance = {v['wider']}"
                   for lv, v in verdict.items()]
     return "\n".join(lines)
@@ -131,29 +137,32 @@ def parse_seeds(s):
 
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--policy", type=Path, default=REPO / "residual" / "policy.json")
+    ap.add_argument("--policy", type=Path, default=REPO / "residual" / "policy.json", help="residual for the proven base")
+    ap.add_argument("--drift-policy", type=Path, default=REPO / "residual" / "policy_drift.json",
+                    help="residual for the drift (map-alignment) base")
+    ap.add_argument("--variants", nargs="+", default=["proven"], choices=["proven", "drift"])
     ap.add_argument("--levels", nargs="+", default=["L0", "L1", "L2", "L3", "L4", "L5"])
     ap.add_argument("--seeds", default="1000-1039", help="held-out seeds (training uses < 1000)")
     ap.add_argument("--workers", type=int, default=None)
     ap.add_argument("--base-only", action="store_true")
     ap.add_argument("--out", type=Path, default=REPO / "residual" / "results")
     a = ap.parse_args(argv)
-    params = None if a.base_only else json.loads(a.policy.read_text())
     seeds = parse_seeds(a.seeds)
-    tasks = [(lv, s, None, False) for lv in a.levels for s in seeds]
-    if not a.base_only:
-        tasks += [(lv, s, params, True) for lv in a.levels for s in seeds]
+    tasks = []
+    for v in a.variants:
+        tasks += [(lv, s, None, False, v) for lv in a.levels for s in seeds]
+        if not a.base_only:
+            params = json.loads((a.policy if v == "proven" else a.drift_policy).read_text())
+            tasks += [(lv, s, params, True, v) for lv in a.levels for s in seeds]
     t0 = time.time()
     rows = run_tasks(tasks, a.workers)
     a.out.mkdir(parents=True, exist_ok=True)
     with open(a.out / "episodes.jsonl", "w") as fh:
         for r in rows:
             fh.write(json.dumps(r, default=float) + "\n")
-    table = summarize(rows)
-    ok, verdict = accept(table, a.levels) if not a.base_only else (None, None)
-    md = markdown(table, a.levels, verdict)
-    if ok is not None:
-        md += f"\n\n**Accepted: {ok}**"
+    table = summarize(rows, by_variant=True)
+    verdicts = {} if a.base_only else {f"{v} residual vs {v} base": accept(table, a.levels, v) for v in a.variants}
+    md = markdown(table, a.levels, verdicts, a.variants)
     md += f"\n\nseeds {a.seeds}, {len(rows)} episodes, {time.time() - t0:.0f} s wall\n"
     (a.out / "results.md").write_text(md)
     print(md)

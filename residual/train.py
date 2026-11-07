@@ -72,11 +72,11 @@ class Adam:
         return self.lr * mh / (np.sqrt(vh) + 1e-8)
 
 
-def gate(theta, level, seeds, base_cache, workers):
+def gate(theta, level, seeds, base_cache, workers, variant="proven"):
     if level not in base_cache:
-        rows = evaluate.run_tasks([(level, s, None, False) for s in seeds], workers)
+        rows = evaluate.run_tasks([(level, s, None, False, variant) for s in seeds], workers)
         base_cache[level] = evaluate.summarize(rows)[(level, False)]
-    rows = evaluate.run_tasks([(level, s, params_of(theta), True) for s in seeds], workers)
+    rows = evaluate.run_tasks([(level, s, params_of(theta), True, variant) for s in seeds], workers)
     return base_cache[level], evaluate.summarize(rows)[(level, True)]
 
 
@@ -90,6 +90,8 @@ def main(argv=None):
     ap.add_argument("--gate-every", type=int, default=4)
     ap.add_argument("--gate-seeds", type=int, default=16)
     ap.add_argument("--start-level", default="L0")
+    ap.add_argument("--variant", default="proven", choices=["proven", "drift"], help="which Jolie base to sit on")
+    ap.add_argument("--levels", nargs="+", default=[lv.name for lv in LEVELS], help="curriculum order")
     ap.add_argument("--init", type=Path, default=None, help="continue from an exported policy")
     ap.add_argument("--out", type=Path, default=REPO / "residual" / "runs" / time.strftime("train-%Y%m%d-%H%M%S"))
     ap.add_argument("--seed", type=int, default=7)
@@ -101,7 +103,7 @@ def main(argv=None):
         d = json.loads(a.init.read_text())
         theta = np.concatenate([np.r_[np.ravel(w), b] for w, b in d["layers"]])
     opt = Adam(len(theta), a.lr)
-    names = [lv.name for lv in LEVELS]
+    names = list(a.levels)
     li = names.index(a.start_level)
     gate_seeds = list(range(2000, 2000 + a.gate_seeds))
     base_cache, history = {}, []
@@ -117,8 +119,8 @@ def main(argv=None):
         seeds = rng.integers(0, 1000, a.pairs)
         tasks = []
         for k in range(a.pairs):
-            tasks.append((lvls[k], int(seeds[k]), params_of(theta + a.sigma * eps[k]), True))
-            tasks.append((lvls[k], int(seeds[k]), params_of(theta - a.sigma * eps[k]), True))
+            tasks.append((lvls[k], int(seeds[k]), params_of(theta + a.sigma * eps[k]), True, a.variant))
+            tasks.append((lvls[k], int(seeds[k]), params_of(theta - a.sigma * eps[k]), True, a.variant))
         rows = evaluate.run_tasks(tasks, a.workers)
         fp = np.array([rows[2 * k]["fitness"] for k in range(a.pairs)])
         fm = np.array([rows[2 * k + 1]["fitness"] for k in range(a.pairs)])
@@ -135,7 +137,7 @@ def main(argv=None):
             rec["error"] = next(r["error"] for r in rows if "error" in r)[-400:]
         it += 1
         if it % a.gate_every == 0:
-            b, r = gate(theta, names[li], gate_seeds, base_cache, a.workers)
+            b, r = gate(theta, names[li], gate_seeds, base_cache, a.workers, a.variant)
             rec["gate"] = {"base": {k: b[k] for k in ("completion", "time_mean", "clear_p5", "contacts")},
                            "residual": {k: r[k] for k in ("completion", "time_mean", "clear_p5", "contacts")}}
             passed = r["completion"] >= .95 and r["completion"] >= b["completion"] and r["contacts"] <= b["contacts"]

@@ -156,19 +156,20 @@ def test_zero_policy_flies_like_the_base():
     assert r.applied > 0
 
 
-GENERATED = [("upload_to_flyx_residual.py", "upload_to_flyx.py"),
-             ("upload_to_flyx_residual_skybeta.py", "upload_to_flyx_skybeta.py")]
+GENERATED = [("upload_to_flyx_residual.py", JC / "upload_to_flyx.py", "policy.json"),
+             ("upload_to_flyx_residual_skybeta.py", JC / "upload_to_flyx_skybeta.py", "policy.json"),
+             ("upload_to_flyx_drift_residual.py", REPO / "residual" / "bases" / "upload_to_flyx_drift.py", "policy_drift.json")]
 
 
-@pytest.mark.parametrize("gen, orig", GENERATED)
-def test_generated_file_no_residual_is_the_original(gen, orig):
+@pytest.mark.parametrize("gen, orig, pol", GENERATED)
+def test_generated_file_no_residual_is_the_original(gen, orig, pol):
     if not (JC / gen).exists():
         pytest.skip("run jolie_course/build_residual_copy.py first")
-    g_text, o_text = (JC / gen).read_text(encoding="utf-8"), (JC / orig).read_text(encoding="utf-8")
+    g_text, o_text = (JC / gen).read_text(encoding="utf-8"), orig.read_text(encoding="utf-8")
     k0, k1 = o_text.index("_SOURCES = {"), o_text.index("\ndef _install_embedded():")
     assert o_text[k0:k1] in g_text                                      # embedded modules byte for byte
     g = _load(JC / gen, "gen_" + gen[:-3])
-    o = _load(JC / orig, "orig_" + orig[:-3])
+    o = _load(orig, "orig_" + orig.stem)
     assert g._SOURCES == o._SOURCES and g._PRIOR == o._PRIOR and g._CHECKPOINTS == o._CHECKPOINTS
     a = g.parse_args(["--no-residual"])
     assert a.no_residual
@@ -182,17 +183,17 @@ def test_generated_file_no_residual_is_the_original(gen, orig):
     assert got == ref                                                   # every other option unchanged
     cls_r, _ = g._residual_choice(False, .5)
     assert issubclass(cls_r, g.Mission) and cls_r is not g.Mission
-    policy = json.loads((REPO / "residual" / "policy.json").read_text())
+    policy = json.loads((REPO / "residual" / pol).read_text())
     assert g._RESIDUAL_POLICY["layers"] == policy["layers"]
 
 
-@pytest.mark.parametrize("gen, orig", GENERATED)
-def test_generated_file_differs_only_by_the_insertions(gen, orig):
+@pytest.mark.parametrize("gen, orig, pol", GENERATED)
+def test_generated_file_differs_only_by_the_insertions(gen, orig, pol):
     if not (JC / gen).exists():
         pytest.skip("run jolie_course/build_residual_copy.py first")
     import difflib
     g = (JC / gen).read_text(encoding="utf-8").splitlines()
-    o = (JC / orig).read_text(encoding="utf-8").splitlines()
+    o = orig.read_text(encoding="utf-8").splitlines()
     g_set = set(g)
     gone = [l[2:] for l in difflib.ndiff(o, g) if l.startswith("- ") and l[2:] not in g_set]
     # the docstring's opening line (its text is kept inside the new header) and exactly two code lines

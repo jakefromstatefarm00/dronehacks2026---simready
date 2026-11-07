@@ -41,6 +41,11 @@ import numpy as np
 
 REPO = Path(__file__).resolve().parents[1]
 BASE_FILE = REPO / "jolie_course" / "upload_to_flyx.py"
+# The bases a residual can sit on. "drift" = Jolie's map-alignment (VIO drift correction) build:
+# origin/jolie-drift-correction f7b97d3, single file rebuilt with its tools/build_single_file.py
+# (identical to the committed pathfinding/flyx/upload_to_flyx.py there), frozen here.
+BASES = {"proven": BASE_FILE, "drift": REPO / "residual" / "bases" / "upload_to_flyx_drift.py"}
+ALIGN_GAIN, ALIGN_STEP_M, ALIGN_MAX_M = .6, .04, 1.5     # her node's apply_alignment (drift base only)
 LAUNCH_XYZ = np.array([-2.515, .914, .05])
 LAUNCH_YAW = math.pi / 2
 DT = 0.05                              # control tick, LAB WALL seconds (20 Hz monotonic timer)
@@ -53,21 +58,28 @@ CLEARANCE_TARGET = 0.30
 _M = np.array([[0.0, 1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, -1.0]])    # course (ENU-like) <-> NED, own inverse
 
 _BASE = None
+_BASE_NAME = None
 _STATIC = {}
 
 
-def base():
-    """Jolie's upload_to_flyx.py as a module; its import installs the embedded packages."""
-    global _BASE
+def base(variant=None):
+    """Jolie's single file as a module; its import installs the embedded packages (pathplan, flyx).
+    Both bases use the same package names, so switching variant re-installs them."""
+    global _BASE, _BASE_NAME
+    variant = variant or _BASE_NAME or "proven"
+    if _BASE is not None and variant != _BASE_NAME:
+        for k in [k for k in sys.modules if k.split(".")[0] in ("pathplan", "flyx")]:
+            del sys.modules[k]
+        _BASE = None
     if _BASE is None:
-        spec = importlib.util.spec_from_file_location("jolie_upload_to_flyx", BASE_FILE)
+        spec = importlib.util.spec_from_file_location("jolie_" + variant, BASES[variant])
         mod = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(mod)
         pp = sys.modules["pathplan.planner_process"]
         # the child loop ignores SIGINT and renices itself; neither works on a thread / on Windows
         pp.signal = types.SimpleNamespace(signal=lambda *a: None, SIGINT=_signal.SIGINT, SIG_IGN=_signal.SIG_IGN)
         pp.os = types.SimpleNamespace(nice=lambda n: 0)
-        _BASE = mod
+        _BASE, _BASE_NAME = mod, variant
     return _BASE
 
 
@@ -138,6 +150,8 @@ class Level:
     vio_scale: float = 0.0             # VIO-loss hazard multiplier (0 = risk counted, no events)
     launch_error: float = 0.0          # m / (x 0.1 rad) placement error on the mark
     depth_noise: float = 0.0           # stereo depth noise, sigma = k * z^2
+    drift_per_m: float = 0.0           # systematic VIO drift: up to this many m per m flown (random direction)
+    yaw_drift_per_m: float = 0.0       # and up to this heading drift, rad per m flown (random sign)
     stall_rate: float = 0.0            # program stalls per second
     stall_max: float = 0.0
     odom_pause_rate: float = 0.0
@@ -158,7 +172,16 @@ LEVELS = [
           stall_rate=.4, stall_max=2.0, odom_pause_rate=.08, slow_silence_rate=.03,
           description="+ full dynamics.py estimator ranges, randomised PX4 gains/lag, FlyX-run-7 stalls (0.4/s, <= 2 s), VIO x1.5, launch error 3 cm"),
 ]
-LEVEL = {lv.name: lv for lv in LEVELS}
+# Drift levels (for the map-alignment base; both bases are scored on them): the reported pose drifts
+# away from the true pose while the camera sees from the true pose.
+DRIFT_LEVELS = [
+    Level("D1", "mixed", .15, drift_per_m=.08, yaw_drift_per_m=math.radians(.5),
+          description="L2 + systematic VIO drift 0-8 cm/m and heading drift 0-0.5 deg/m"),
+    Level("D2", "mixed", .15, estimator=.5, vio_scale=1.0, launch_error=.015, depth_noise=.01,
+          stall_rate=.2, stall_max=1.2, odom_pause_rate=.05, slow_silence_rate=.02,
+          drift_per_m=.08, yaw_drift_per_m=math.radians(.5), description="L4 + the D1 drift"),
+]
+LEVEL = {lv.name: lv for lv in LEVELS + DRIFT_LEVELS}
 
 
 # Calibrated to Jolie's completed FlyX run (lab wall clock, sim ~0.8x real time): NAVIGATE 120.85 s wall
@@ -221,7 +244,8 @@ class InProcessPlanner:
     def update(self, xy, yaw):
         frame, self.frame = self.frame, None
         self.conn.send((xy, yaw, frame))
-        cmd, self.events, self.cleared, self.ms, self.depth_quality = self.conn.recv()
+        cmd, self.events, self.cleared, self.ms, self.depth_quality, *rest = self.conn.recv()
+        self.align = rest[0] if rest else None          # drift base: map-alignment shift
         return cmd
 
     def close(self):
@@ -456,6 +480,9 @@ class EpisodeResult:
     mission_state: str = ""
     note: str = ""
     info: dict = field(default_factory=dict)
+    variant: str = "proven"
+    align_total_m: float = 0.0
+    drift_final_m: float = 0.0
     traj: list = field(default_factory=list)
 
     def fitness(self):
@@ -470,12 +497,12 @@ class EpisodeResult:
         return f
 
 
-def run_episode(level, seed, policy_params=None, residual=False, record=False, max_s=MAX_SIM_S):
+def run_episode(level, seed, policy_params=None, residual=False, record=False, max_s=MAX_SIM_S, variant="proven"):
     """One flight. residual=False flies Jolie's Mission class itself; residual=True the subclass
     from residual/runtime.py with ``policy_params`` (None -> always zero correction)."""
     if isinstance(level, str):
         level = LEVEL[level]
-    b = base()
+    b = base(variant)
     rt = sys.modules.get("residual.runtime") or __import__("residual.runtime", fromlist=["x"])
     rng = np.random.default_rng(seed)
     world = make_world(level, np.random.default_rng([seed, 1]))
@@ -490,6 +517,10 @@ def run_episode(level, seed, policy_params=None, residual=False, record=False, m
         launch_true[:2] += rng.normal(0, level.launch_error, 2)
         yaw0 += rng.normal(0, level.launch_error * .5)
     sim.reset(launch_true, yaw0, rng_dyn)
+    drift_dir = rng.uniform(0, 2 * math.pi)
+    drift_rate = rng.uniform(0, level.drift_per_m)
+    yaw_drift = rng.uniform(-level.yaw_drift_per_m, level.yaw_drift_per_m)
+    align_total = np.zeros(2)
 
     carrot = .5
     build = b._build_planner_embedded
@@ -504,7 +535,7 @@ def run_episode(level, seed, policy_params=None, residual=False, record=False, m
     renderer = DepthRenderer(world["truth_fine"], world["fine"], rng_cam, level.depth_noise)
     px4 = FakePX4()
     tel = b.Telemetry(now=0.0)
-    res = EpisodeResult(level.name, seed, residual, info=world["info"])
+    res = EpisodeResult(level.name, seed, residual, info=world["info"], variant=variant)
     stalls = _schedule(rng_ev, level.stall_rate, .15, level.stall_max, MAX_SIM_S, "exp")
     odom_pauses = _schedule(rng_ev, level.odom_pause_rate, .3, 1.4, MAX_SIM_S)
     slow_silences = _schedule(rng_ev, level.slow_silence_rate, 2.0, 6.0, MAX_SIM_S)
@@ -560,6 +591,14 @@ def run_episode(level, seed, policy_params=None, residual=False, record=False, m
                             planner.give_frame((img.tobytes(), renderer.W, renderer.H, "32FC1", renderer.W * 4,
                                                 renderer.k, np.asarray(xyz, float), rot))
                         mission.plan()
+                        if variant == "drift" and getattr(planner, "align", None) is not None and mission.frame is not None:
+                            step_a = ALIGN_GAIN * np.asarray(planner.align, float)      # = her apply_alignment
+                            na = float(np.linalg.norm(step_a))
+                            if na > ALIGN_STEP_M:
+                                step_a *= ALIGN_STEP_M / na
+                            if np.linalg.norm(align_total + step_a) <= ALIGN_MAX_M:
+                                mission.frame.origin_in_course = mission.frame.origin_in_course + np.array([*step_a, 0.0])
+                                align_total += step_a
                         if residual:
                             r = np.array(mission.residual)
                             if prev_res is not None:
@@ -578,6 +617,10 @@ def run_episode(level, seed, policy_params=None, residual=False, record=False, m
                 sim.step(sim.p + sim.bias, sim.yaw + sim.yaw_bias, ground_z=LAUNCH_XYZ[2])
             else:
                 sim.step(tgt[0], tgt[1], ground_z=LAUNCH_XYZ[2])
+            if drift_rate or yaw_drift:                     # systematic VIO drift with distance flown
+                moved = float(np.linalg.norm(sim.p[:2] - prev_true))
+                sim.bias[:2] += drift_rate * moved * np.array([math.cos(drift_dir), math.sin(drift_dir)])
+                sim.yaw_bias += yaw_drift * moved
             if px4.arming_state == 2:
                 px4.landed = sim.p[2] < LAUNCH_XYZ[2] + .03 and px4.nav_state == 18
                 if px4.landed:
@@ -650,6 +693,8 @@ def run_episode(level, seed, policy_params=None, residual=False, record=False, m
     res.state_times = {k: round(v, 2) for k, v in state_t.items()}
     if res.complete:
         res.course_time = res.navigate_time
+    res.align_total_m = float(np.linalg.norm(align_total))
+    res.drift_final_m = float(np.linalg.norm(sim.bias[:2]))
     if residual:
         res.applied = mission.residual_stats["applied"]
         res.zeroed = mission.residual_stats["zero"]
