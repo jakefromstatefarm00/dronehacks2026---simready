@@ -36,6 +36,7 @@ class FakePX4(Node):
         self.pos = np.zeros(3)
         self.yaw = 0.0
         self.arming, self.nav, self.landed = 1, 4, True          # disarmed, POSCTL, on the ground
+        self.intention, self.failsafe = 4, False
         self.sp = None
         self.last_offboard = -1e9
         self.log = {"commands": [], "setpoints": 0, "max_alt": 0.0, "path": []}
@@ -68,16 +69,24 @@ class FakePX4(Node):
         self.log["commands"].append({"command": int(msg.command), "p1": msg.param1, "p2": msg.param2,
                                      "nav": self.nav, "arming": self.arming})
         if msg.command == 176 and msg.param2 == 6.0 and time.monotonic() - self.last_offboard < .5:
-            self.nav = 14                                       # OFFBOARD (only with a live heartbeat)
+            self.nav = self.intention = 14                      # OFFBOARD (only with a live heartbeat)
         elif msg.command == 400 and msg.param1 == 1.0 and self.nav == 14:
             self.arming, self.landed = 2, False
         elif msg.command == 21:
-            self.nav = 18                                       # AUTO_LAND
+            self.nav = self.intention = 18                      # AUTO_LAND (commanded)
+            self.failsafe = False
 
     def step(self):
         now = self.t()
-        if self.nav == 14 and time.monotonic() - self.last_offboard > .5:
-            self.nav = 5                                         # offboard loss failsafe -> HOLD-ish
+        # like PX4 1.16: offboard signal lost (COM_OF_LOSS_T 1 s) -> failsafe Land, user intention
+        # still Offboard; once the heartbeat returns, back to Offboard (FlyX run 7)
+        quiet = time.monotonic() - self.last_offboard
+        if self.nav == 14 and quiet > 1.0:
+            self.nav, self.failsafe = 18, True
+            self.log.setdefault("failsafes", 0)
+            self.log["failsafes"] += 1
+        elif self.failsafe and self.intention == 14 and quiet < .2:
+            self.nav, self.failsafe = 14, False
         if self.arming == 2 and self.nav == 14 and self.sp is not None:
             d = self.sp[0] - self.pos
             n = np.linalg.norm(d)
@@ -98,9 +107,10 @@ class FakePX4(Node):
         o.position = [float(v) for v in self.pos]
         o.q = [math.cos(self.yaw / 2), 0.0, 0.0, math.sin(self.yaw / 2)]
         self.p["odom"].publish(o)
-        if self.due("status", now, (self.arming, self.nav)):
+        if self.due("status", now, (self.arming, self.nav, self.failsafe)):
             s = px4.VehicleStatus()
             s.timestamp, s.arming_state, s.nav_state = us, self.arming, self.nav
+            s.failsafe, s.nav_state_user_intention = self.failsafe, self.intention
             self.p["status"].publish(s)
         if self.due("land", now, self.landed):
             ld = px4.VehicleLandDetected()

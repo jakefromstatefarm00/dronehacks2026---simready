@@ -111,6 +111,15 @@ arming and lands in flight. At the pad it centres to 8 cm before Land (was up to
 fake-PX4 now 0.04-0.07 m). Every run ends with a terminal summary: result and reason,
 checkpoints, PX4 mode changes + failsafe flags, stalls, depth hit quality, planner events.
 
+**Run 7** cleared checkpoint 1; depth was right (100 % of hits on published walls). The lab froze our
+program 86 times, up to 1.95 s (even before arming, so not our planner). Each freeze > 1 s tripped
+PX4's offboard-loss failsafe (Land), and PX4 returned to Offboard by itself once setpoints resumed
+(8 blips) - but one lasted 0.84 s and our 0.5 s rule gave up (TAKEN_OVER). Now: while PX4 is in a
+failsafe *and still wants Offboard*, keep streaming for up to 5 s; a mode change by anyone else still
+hands over after 0.5 s. The journal is written by its own thread (never blocks the setpoint loop).
+`fake_px4.py` now copies PX4's failsafe-and-return; test harness freezes our processes 1.5-2 s every
+8 s: 4/4 missions complete, 7-11 freezes each (worst 1.95 s).
+
 Tested: `tests/test_flyx_mission.py`; full ROS wiring in Jazzy against `fake_px4.py`
 (status at the lab's slow rates): course completed, 3 commands (Offboard, arm, land);
 shadow + Ctrl-C sends nothing; `--execute` + SIGTERM mid-flight sends Land.

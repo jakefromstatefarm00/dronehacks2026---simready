@@ -21,6 +21,7 @@ from collections import deque
 import json
 import math
 import os
+import queue
 import signal
 from pathlib import Path
 import sys
@@ -195,6 +196,8 @@ def print_summary(mission, planner, node, journal_path):
         lines += [f"  {m}" for m in node.px4_modes[-4:]]
     if node.stalls:
         lines.append(f"program stalls > 0.15 s: {len(node.stalls)}, worst {max(node.stalls):.2f} s")
+    if mission.px4_failsafe_waits:
+        lines.append(f"PX4 failsafe blips ridden out: {mission.px4_failsafe_waits * .05:.1f} s in total")
     q = planner.depth_quality or {}
     if q.get("hits"):
         lines.append(f"depth: {node.depth_stats['frames']} frames; {q['hits_on_published_walls'] / q['hits']:.0%} of "
@@ -228,14 +231,23 @@ def main(argv=None):
     a.output.mkdir(parents=True, exist_ok=False)
     journal = open(a.output / "journal.jsonl", "w", encoding="utf-8")
 
-    log_lock = threading.Lock()
+    # The journal is written by its own thread: a slow disk must never hold up the setpoint loop.
+    log_queue, log_closed = queue.Queue(), threading.Event()
+
+    def journal_writer():
+        while True:
+            line = log_queue.get()
+            if line is None:
+                return
+            journal.write(line)
+            journal.flush()
+
+    writer = threading.Thread(target=journal_writer, daemon=True)
+    writer.start()
 
     def log(record):
-        with log_lock:                        # callbacks may still fire while shutting down
-            if journal.closed:
-                return
-            journal.write(json.dumps(record, default=float) + "\n")
-            journal.flush()
+        if not log_closed.is_set():           # callbacks may still fire while shutting down
+            log_queue.put(json.dumps(record, default=float) + "\n")
 
     class FlyNode(Node):
         def __init__(self):
@@ -514,8 +526,10 @@ def main(argv=None):
         executor.shutdown(timeout_sec=1.0)
         planner.close()
         node.destroy_node()
-        with log_lock:
-            journal.close()
+        log_closed.set()
+        log_queue.put(None)
+        writer.join(timeout=3.0)
+        journal.close()
         rclpy.try_shutdown()
 
 

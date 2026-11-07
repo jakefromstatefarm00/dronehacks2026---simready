@@ -83,6 +83,10 @@ class MissionConfig:
     pad_centre_timeout_s: float = 8.0
     pad_xy: tuple | None = None            # pad centre, course frame (from the planner)
     offboard_loss_s: float = .5
+    # PX4 drops to its failsafe (Land) when our setpoints stop > COM_OF_LOSS_T (1 s) and returns to
+    # Offboard by itself once they resume (FlyX run 7: 8 such blips during 1-2 s program stalls).
+    # While PX4 is in failsafe but still wants Offboard, keep streaming for up to this long.
+    failsafe_resume_s: float = 5.0
     launch_xy: tuple = (-2.515, .914)      # launch mark, course frame
     launch_heading: float = float(np.pi / 2)   # vehicle heading on the mark, course frame (facing +y)
     launch_body_agl: float = .05           # body origin above the floor when sitting on the mark
@@ -115,6 +119,7 @@ class Mission:
         self._sp_yaw = None                # last commanded NED yaw (rate limiter state)
         self._last_sp = None               # last NAVIGATE setpoint (held while odometry pauses)
         self._pad_since = None
+        self.px4_failsafe_waits = 0        # control ticks spent waiting for PX4 to return to Offboard
         self._sp_yaw_t = None
         self._offboard_lost_since = None
         self.pose_course = None            # (xyz, yaw, rotation) for depth projection
@@ -293,6 +298,14 @@ class Mission:
 
         return Output(self.state)
 
+    def _failsafe_hold(self):
+        """What to stream while PX4 sits in a failsafe it will leave once setpoints flow again."""
+        if self._last_sp is not None:
+            return self._last_sp
+        if self.state == "TAKEOFF" and self._takeoff_xy is not None:
+            return self._course_setpoint(self._takeoff_xy, self.pose_course[1])
+        return self._course_setpoint(self.pose_course[0][:2], self.pose_course[1])
+
     def _centre_and_land(self, tel):
         """Pad reached (centre within the planner's pad radius): fly to the pad centre, then Land.
         Landing where "reached" fired put the drone 0.25 m off centre (Suraj's Gazebo v139)."""
@@ -321,19 +334,27 @@ class Mission:
 
     def _airborne_guard(self, tel, healthy):
         c, now = self.cfg, tel.now
+        waiting_for_px4 = False
         if tel.nav_state != NAV_STATE_OFFBOARD:
             self._offboard_lost_since = self._offboard_lost_since if self._offboard_lost_since is not None else now
-            if now - self._offboard_lost_since > c.offboard_loss_s:
-                why = ("PX4 failsafe" if tel.failsafe else
+            # PX4's own failsafe while it still wants Offboard: it comes back once setpoints flow again
+            px4_will_return = tel.failsafe and tel.user_intention == NAV_STATE_OFFBOARD
+            if now - self._offboard_lost_since > (c.failsafe_resume_s if px4_will_return else c.offboard_loss_s):
+                why = ("PX4 failsafe that did not clear" if px4_will_return else "PX4 failsafe" if tel.failsafe else
                        "mode changed by someone else" if tel.user_intention != NAV_STATE_OFFBOARD else "unknown")
                 self._go("TAKEN_OVER", now, f"PX4 left Offboard: {why} (nav_state {tel.nav_state}, "
                                             f"requested {tel.user_intention}, failsafe {tel.failsafe}); not commanding")
                 return Output(self.state)
+            waiting_for_px4 = px4_will_return
         else:
             self._offboard_lost_since = None
         problem = self._unhealthy_reason(tel, airborne=True)
         if problem:
             return self._land(now, "unhealthy: " + problem)
+        if waiting_for_px4:
+            self.px4_failsafe_waits += 1
+            return Output(self.state, self._failsafe_hold(),
+                          note="PX4 failsafe while it wants Offboard: streaming until it returns")
         if self._sim_takeoff is not None and tel.sim_now is not None:
             flown = tel.sim_now - self._sim_takeoff               # the run limit is in sim time
         else:

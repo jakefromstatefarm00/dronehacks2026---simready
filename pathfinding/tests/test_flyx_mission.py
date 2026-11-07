@@ -274,11 +274,34 @@ def test_takeoff_timeout_accepts_near_altitude():
     assert "near altitude" in m.events[-1]["note"]
 
 
-def test_taken_over_says_failsafe():
+FAILSAFE = {"nav_state": 18, "failsafe": True, "user_intention": NAV_STATE_OFFBOARD}
+
+
+def test_px4_offboard_loss_blip_is_ridden_out():
+    """FlyX run 7: a 1-2 s program stall trips PX4's offboard-loss failsafe (Land) and PX4 returns to
+    Offboard once setpoints flow again; giving up after 0.5 s (TAKEN_OVER) ended that run."""
     m, t = airborne_mission()
-    for i in range(1, 15):
-        m.tick(tel(t + .05 * i, **{**AIR, "nav_state": 4, "failsafe": True, "user_intention": NAV_STATE_OFFBOARD}))
-    assert m.state == "TAKEN_OVER" and "PX4 failsafe" in m.events[-1]["note"]
+    m.plan()
+    for i in range(1, 30):                                              # 1.45 s in PX4's failsafe
+        out = m.tick(tel(t + .05 * i, **{**AIR, **FAILSAFE}))
+        assert out.setpoint is not None and out.command is None          # keep streaming, no Land
+    assert m.state == "NAVIGATE"
+    m.tick(tel(t + 1.6, **AIR))                                         # PX4 back in Offboard
+    assert m.state == "NAVIGATE" and m.px4_failsafe_waits > 0
+
+
+def test_failsafe_that_never_clears_hands_over():
+    m, t = airborne_mission()
+    for i in range(1, 130):                                             # 6.4 s
+        m.tick(tel(t + .05 * i, **{**AIR, **FAILSAFE}))
+    assert m.state == "TAKEN_OVER" and "did not clear" in m.events[-1]["note"]
+
+
+def test_mode_change_by_someone_else_hands_over_quickly():
+    m, t = airborne_mission()
+    for i in range(1, 15):                                              # 0.7 s
+        m.tick(tel(t + .05 * i, **{**AIR, "nav_state": 2, "failsafe": False, "user_intention": 2}))
+    assert m.state == "TAKEN_OVER" and "someone else" in m.events[-1]["note"]
 
 
 def test_carrot_is_pulled_in_at_corners():
