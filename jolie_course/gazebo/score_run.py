@@ -5,6 +5,8 @@
 <run_dir> is a local copy of artifacts/gb10-sky-beta-course-vNNN with at least
 truth-poses.csv (sim/runtime/post_flight.sh), native-program.log and journal/journal.jsonl
 (the program's --output); <run_dir>.launch.log next to it is used for the exit code.
+Completed = program DONE with 5/5 checkpoints AND truth pad error < 0.40 m AND truth tilt < 60 deg
+(the program exit code alone is not enough: v209 crashed after VIO divergence and still exited 0).
 One JSON row per run is printed (and appended to --out); --table prints a summary.
 
 Clearance: free radius per airborne truth point against the published course OBJ
@@ -141,21 +143,25 @@ def score(run_dir: Path) -> dict:
             row["frac_under_028"] = round(float((fr < FOOTPRINT).mean()), 4)
             row["n_pts_airborne"] = int(len(seg))
             row["max_z"] = round(float(P[:, 2].max()), 2)
+            qw, qx, qy, qz = (T[k][i0:] for k in ("qw", "qx", "qy", "qz"))
+            tilt = np.degrees(np.arccos(np.clip(1 - 2 * (qx ** 2 + qy ** 2), -1, 1)))
+            row["max_tilt_deg"] = round(float(tilt.max()), 1)
         row["pad_err_m"] = round(float(np.linalg.norm(P[-1, :2] - PAD)), 3)
         row["final_xyz"] = [round(float(v), 3) for v in P[-1]]
     row["completed"] = bool(row.get("final_state") == "DONE" and row.get("cleared") == 5
-                            and row.get("pad_err_m", 9) < 0.40)
+                            and row.get("pad_err_m", 9) < 0.40
+                            and row.get("max_tilt_deg", 0) < 60)
     return row
 
 
 def table(rows):
-    hdr = ["run", "prog", "ok", "state", "cp", "nav_sim", "a2d_sim", "a2d_wall", "air_tr", "minclr", "n<.28", "pad"]
+    hdr = ["run", "prog", "ok", "state", "cp", "nav_sim", "a2d_sim", "a2d_wall", "air_tr", "minclr", "n<.28", "pad", "tilt"]
     print(" | ".join(hdr))
     for r in rows:
         print(" | ".join(str(x) for x in [r["run"], Path(r.get("program", "?")).name, int(r["completed"]),
               r.get("final_state"), r.get("cleared"), r.get("navigate_s_sim"), r.get("arm_to_disarm_s_sim"),
               r.get("arm_to_disarm_s_wall"), r.get("airborne_s_truth"), r.get("min_clear_m"),
-              r.get("n_pts_under_028"), r.get("pad_err_m")]))
+              r.get("n_pts_under_028"), r.get("pad_err_m"), r.get("max_tilt_deg")]))
     by = {}
     for r in rows:
         by.setdefault((r.get("program", "?"), r.get("args", "")), []).append(r)
@@ -170,7 +176,10 @@ def table(rows):
         if len(a2d):
             s += f"; arm-disarm mean {a2d.mean():.1f} p90 {np.percentile(a2d, 90):.1f} s"
         if clr:
-            s += f"; worst min clearance {min(clr):.3f} m"
+            s += f"; worst min clearance {min(clr):.3f} m (all runs)"
+        okc = [r["min_clear_m"] for r in ok if r.get("min_clear_m") is not None]
+        if okc:
+            s += f", {min(okc):.3f} m (completed runs)"
         print(s)
 
 

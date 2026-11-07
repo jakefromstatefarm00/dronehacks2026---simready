@@ -1,0 +1,17 @@
+run | prog | ok | state | cp | nav_sim | a2d_sim | a2d_wall | air_tr | minclr | n<.28 | pad | tilt
+v200 | upload_to_flyx.py | 1 | DONE | 5 | 65.0 | 77.91 | 93.4 | 70.54 | 0.311 | 0 | 0.071 | 3.6
+v201 | upload_to_flyx.py | 1 | DONE | 5 | 61.08 | 74.08 | 91.35 | 66.7 | 0.293 | 0 | 0.095 | 3.7
+v202 | upload_to_flyx.py | 1 | DONE | 5 | 70.17 | 83.16 | 100.35 | 75.77 | 0.296 | 0 | 0.087 | 3.6
+v203 | upload_to_flyx.py | 1 | DONE | 5 | 60.13 | 73.01 | 93.7 | 65.63 | 0.298 | 0 | 0.08 | 3.7
+v204 | upload_to_flyx.py | 1 | DONE | 5 | 63.9 | 76.72 | 98.1 | 69.38 | 0.308 | 0 | 0.054 | 3.9
+v205 | upload_to_flyx.py | 1 | DONE | 5 | 66.32 | 78.96 | 98.7 | 71.58 | 0.298 | 0 | 0.094 | 3.6
+v206 | upload_to_flyx.py | 1 | DONE | 5 | 61.1 | 73.97 | 94.7 | 66.63 | 0.32 | 0 | 0.041 | 3.7
+v207 | upload_to_flyx.py | 1 | DONE | 5 | 65.07 | 77.68 | 98.65 | 70.33 | 0.291 | 0 | 0.091 | 3.6
+v208 | upload_to_flyx.py | 1 | DONE | 5 | 60.91 | 73.65 | 91.55 | 66.3 | 0.3 | 0 | 0.07 | 3.6
+v209 | upload_to_flyx.py | 0 | DONE | 2 | 24.97 | 38.29 | 46.25 | 17.8 | 0.054 | 91 | 1.564 | 102.5
+v210 | upload_to_flyx.py | 1 | DONE | 5 | 67.93 | 80.89 | 95.0 | 73.5 | 0.309 | 0 | 0.065 | 3.6
+v211 | upload_to_flyx.py | 1 | DONE | 5 | 61.6 | 74.59 | 88.1 | 67.22 | 0.29 | 0 | 0.041 | 3.7
+v212 | upload_to_flyx.py | 1 | DONE | 5 | 64.6 | 77.58 | 97.0 | 70.2 | 0.29 | 0 | 0.04 | 4.0
+v213 | upload_to_flyx.py | 1 | DONE | 5 | 81.25 | 94.12 | 115.15 | 86.77 | 0.29 | 0 | 0.072 | 3.8
+v214 | upload_to_flyx.py | 1 | DONE | 5 | 72.34 | 85.15 | 102.65 | 78.2 | 0.208 | 645 | 0.163 | 3.1
+upload_to_flyx.py : completed 14/15; NAVIGATE mean 65.8 p90 71.7 s; arm-disarm mean 78.7 p90 84.6 s; worst min clearance 0.054 m (all runs), 0.208 m (completed runs)
