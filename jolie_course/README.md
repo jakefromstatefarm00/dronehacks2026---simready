@@ -54,9 +54,19 @@ native FlyX program (`flyx/fly_pathplan.py` + `flyx/mission.py` + the planner) a
    nose is still turning toward the route, so the drone slows through corners instead of swinging
    wide.
 
-The native sources were removed from `pathfinding/` when the repo moved to the Sky Beta contract.
-They are in git history at `7a737e0`. To rebuild this file, Jolie needs to push the sources with
-those two changes.
+**Sources:** branch `jolie-flyx-sources` (commit `e1ac88d`). Rebuilding from it reproduces
+this file exactly, apart from the commit stamp, and its 170 tests pass (checked 2026-11-07). To
+rebuild:
+
+```
+git worktree add ../jolie-src origin/jolie-flyx-sources
+cd ../jolie-src/pathfinding && python3 tools/build_single_file.py   # -> flyx/upload_to_flyx.py
+```
+
+The native sources are not on `main`, which keeps the drone-side (Sky Beta) code only.
+
+Branch `jolie-drift-correction` (`f7b97d3`) builds on top of this with map alignment, a
+visual-odometry drift correction. That work is newer and is not the version that flew.
 
 ## `jolie_course.py`: the same planner on the drone's interface
 
