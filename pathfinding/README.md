@@ -1,11 +1,11 @@
-# pathfinding â€” online path planner, FlyX single file, Gazebo test bed
+# pathfinding â€” online path planner, FlyX programs, Gazebo test bed
 
 Everything needed to run, test and change our pathfinding. Three things live here:
 
 | | What | Where |
 |---|---|---|
 | **The algorithm** | Theta\* re-planning on a map built from the published layout and corrected by a depth camera | `pathplan/` |
-| **The FlyX file** | One self-contained ROS 2 node to drop into FlyX in place of `square_mission.py` | `flyx/pathplan_mission.py` |
+| **FlyX** | The planner on native PX4 in the FlyX lab (+ a single-file skybeta node) | `flyx/` |
 | **The simulation** | Offline benchmark (seconds) + Gazebo Harmonic flights in Docker (minutes) | `pathplan/harness.py`, `gzsim/` |
 
 ## Quick start
@@ -13,7 +13,7 @@ Everything needed to run, test and change our pathfinding. Three things live her
 ```bash
 cd pathfinding
 python3 -m venv .venv && .venv/bin/pip install -r requirements.txt     # Windows: .venv\Scripts\pip
-.venv/bin/python -m pytest -q tests                                     # 129 tests, ~15 s
+.venv/bin/python -m pytest -q tests                                     # 152 tests, ~15 s
 .venv/bin/python -m pathplan.harness --variants 4 --output runs/bench   # offline benchmark, ~4 min
 bash gzsim/run.sh                                                        # Gazebo flight (Linux/WSL + Docker)
 ```
@@ -41,25 +41,23 @@ risky; never straighten a path toward walls; replan when the map changes near th
 when stuck, look around, then doubt published walls the camera has not confirmed; accept
 Gate B when the window approach is blocked.
 
-## The FlyX file (`flyx/pathplan_mission.py`)
+## FlyX (`flyx/`)
 
-A fork of the organisers' `competitor_example/square_mission.py` (same skybeta contract:
-`/skybeta/state` + `/visual_slam/tracking/odometry` in, `/skybeta/setpoint/pose` out; never
-`/fmu/*`, never arms). WAIT_FOR_OFFBOARD -> TAKEOFF 0.9 m -> NAVIGATE (planner) -> HOLD
-over the pad. Needs only `rclpy`, the standard message packages and `numpy`.
+**The FlyX cloud lab is native PX4 with no skybeta interface**, so the program for it is
+`flyx/fly_pathplan.py` (PX4 Offboard via `px4_msgs`: arm, takeoff, course, PX4 land).
+Runbook, what each file does and the first lab run's fixes: [`flyx/README.md`](flyx/README.md).
 
 ```bash
-python3 pathplan_mission.py --ros-args -p shadow:=true                 # plan only, no setpoints
-python3 pathplan_mission.py --ros-args -p depth_topic:=<depth image>   # fly with depth
-ros2 topic echo /dronehacks_pathplan/status
+python3 -m flyx.check_lab                                              # read-only lab check
+python3 -m flyx.fly_pathplan --depth-topic /camera/depth/image_raw     # shadow (sends nothing)
+python3 -m flyx.fly_pathplan --execute --depth-topic /camera/depth/image_raw
 ```
 
-- **Start on the launch mark facing up the first corridor**: the map is aligned from the
-  start pose (cuVSLAM's `odom` origin).
-- Without `depth_topic` it flies the published map only (no obstacle sensing).
-- It ends holding over the pad: the skybeta interface has no land command.
-- **Do not edit it by hand.** It is generated from `ros2/dronehacks_pathplan/` + `pathplan/`:
-  `python tools/build_single_file.py`. The ROS 2 package version is in `ros2/`.
+`flyx/pathplan_mission.py` is the same planner as **one self-contained skybeta node** (a fork
+of the organisers' `square_mission.py`: `/skybeta/state` + `/visual_slam/tracking/odometry`
+in, `/skybeta/setpoint/pose` out; never arms, ends holding over the pad). Use it on a stack
+that runs skybeta (the real drone). It is generated from `ros2/dronehacks_pathplan/` +
+`pathplan/` by `python tools/build_single_file.py`; do not edit it by hand.
 
 ## The simulation
 
@@ -83,11 +81,11 @@ unmapped cylinders; `gzsim/fly_planner.py` flies `OnlinePlanner` with ground-tru
 | 02 | published | on | completed, 80.3 s, 0 contacts, landed 0.05 m |
 | 05 | + 1 unmapped cylinder | on | completed, 79.0 s, 0 contacts (cylinder included), landed 0.07 m |
 | 06 | same cylinder | **off** | **failed: hit the cylinder** after the tunnel |
-| verify-1 | published | on | completed, 107.2 s, 0 contacts, min clearance 0.369 m (X3 radius 0.36), landed 0.03 m — with tight-spot slow-down |
-| verify-2 | published | on | completed, 92.2 s, 0 contacts, min clearance 0.378 m, landed 0.05 m — same settings, repeat |
+| verify-1 | published | on | completed, 107.2 s, 0 contacts, min clearance 0.369 m (X3 radius 0.36), landed 0.03 m â€” with tight-spot slow-down |
+| verify-2 | published | on | completed, 92.2 s, 0 contacts, min clearance 0.378 m, landed 0.05 m â€” same settings, repeat |
 | verify-3 | + 1 unmapped cylinder | on | **failed: stalled** turning in place SE of the cylinder (0 contacts, timeout 240 s); run 05 in the same world completed |
-| commit-1 | + 1 unmapped cylinder | on | completed, 109.1 s, 0 contacts, landed 0.07 m — **with path commitment** (fixes verify-3) |
-| commit-2 | + 1 unmapped cylinder | on | completed, 196.8 s, 0 contacts, landed 0.05 m — safe but over the 180 s run limit |
+| commit-1 | + 1 unmapped cylinder | on | completed, 109.1 s, 0 contacts, landed 0.07 m â€” **with path commitment** (fixes verify-3) |
+| commit-2 | + 1 unmapped cylinder | on | completed, 196.8 s, 0 contacts, landed 0.05 m â€” safe but over the 180 s run limit |
 | commit-3 | published | on | completed, 98.1 s, 0 contacts, min clearance 0.379 m, landed 0.06 m |
 
 ```bash
@@ -104,7 +102,7 @@ the published map is tight (`--tight-speed`, from map clearance, never ground tr
 were clean. Gazebo
 uses ground-truth pose (no cuVSLAM) and velocity control (not PX4). Near an unmapped obstacle two routes can cost almost the same; the planner now keeps its route
 unless a new one is >10 % cheaper (`commit_margin`), which fixed the verify-3 stall. Gazebo
-times are slow (98–197 s) because of the X3's cautious tight-spot speed (0.15 m/s) — speed
+times are slow (98â€“197 s) because of the X3's cautious tight-spot speed (0.15 m/s) â€” speed
 tuning is open. Depth frames are
 projected with the latest pose, not the pose at capture time â€” fine at these speeds, the
 next thing to fix. Checkpoint lines 1â€“2 are our reading of the rules, not official
@@ -114,7 +112,7 @@ coordinates.
 
 ```
 pathplan/        the algorithm + offline benchmark
-flyx/            pathplan_mission.py: THE file for FlyX (generated)
+flyx/            FlyX lab: check_lab, fly_pathplan (native PX4); pathplan_mission.py (skybeta, generated)
 ros2/            dronehacks_pathplan: the same node as a ROS 2 package (source of the file)
 gzsim/           Gazebo test bed: run.sh, make_world.py, fly_planner.py
 tools/           build_single_file.py
