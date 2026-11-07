@@ -29,6 +29,9 @@ corridor lands 1 m along the start heading, to 1e-16), and ROS start-up and Ctrl
 
 ## `upload_to_flyx.py`: the FlyX run that worked
 
+Run log and timings: [`results/flyx-2026-11-07-full-course.md`](results/flyx-2026-11-07-full-course.md)
+(course 120.9 s, arm to disarm 137.1 s, pad 0.07 m).
+
 ```
 python3 jolie_course/upload_to_flyx.py            # FlyX: flies (Offboard, arm, takeoff, course, land)
 python3 jolie_course/upload_to_flyx.py --shadow   # plan and log only
