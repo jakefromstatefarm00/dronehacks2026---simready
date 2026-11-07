@@ -29,6 +29,11 @@ import numpy as np
 
 WALL_SNAP_M = .25       # depth returns this close to a published wall are that wall
 HIT_CONFIRM = 3         # votes for a new obstacle cell: +2 per frame that hits it, -1 per frame
+# Keep moving while the nose turns toward the route up to this far off; stop and turn in place only
+# beyond it. With the heading capped at 0.25 rad/s, the planner's default 30 deg made the drone stop
+# and turn in place 21-26 times per flight, and a stop followed by an in-place turn is what loses
+# visual odometry. From jolie_course/upload_to_flyx.py, the version that completed the whole FlyX course.
+TURN_IN_PLACE_DEG = 60.0
 
 
 def safe_carrot_path(cost, spec, xy, path, carrot_m):
@@ -64,6 +69,7 @@ class PlannerCore:
         from pathplan.ros_node import build_planner
         from pathplan.world import clearance
         self.planner, self.spec, self.env, self.prior = build_planner(self.args[0], self.altitude)
+        self.planner.cfg.turn_in_place_deg = TURN_IN_PLACE_DEG
         self.near_wall = (clearance(self.prior, self.spec) < WALL_SNAP_M) & ~self.prior
         self.votes = np.zeros(self.prior.shape, np.int8)
         self.quality = {"frames": 0, "hits": 0, "hits_on_published_walls": 0, "hits_new_confirmed": 0,

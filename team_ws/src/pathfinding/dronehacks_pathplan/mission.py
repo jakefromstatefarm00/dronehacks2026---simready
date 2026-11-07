@@ -95,6 +95,10 @@ class MissionConfig:
     shadow: bool = False
     altitude: float = .9                    # course z (above the floor) to fly at; walls are 1.73 m
     carrot_m: float = .5
+    # the carrot shrinks (to 30 % at slow_turn_deg) while the nose is still turning toward the route,
+    # so the drone slows through corners instead of swinging wide (from the FlyX-proven upload_to_flyx.py)
+    slow_turn_deg: float = 60.0
+    slow_turn_min_frac: float = .3
     launch_xy: tuple = (-2.515, .914)       # launch mark, course frame
     launch_heading: float = float(np.pi / 2)  # facing up the first corridor (course +y)
     launch_height: float = .05              # body origin above the floor on the mark
@@ -251,6 +255,15 @@ class Mission:
             return True
         return self.state == "TAKEOFF" and self.pose_course[0][2] > self.cfg.plan_above_m
 
+    def _carrot_for(self, cmd, yaw):
+        """Setpoint distance: shorter while the nose is still turning toward the route (0.5 m when
+        aligned, 0.15 m at 60 deg). Same rule as the FlyX-proven upload_to_flyx.py."""
+        c = self.cfg
+        if cmd.mode != "move" or cmd.yaw is None:
+            return c.carrot_m
+        off = abs(float(np.arctan2(np.sin(cmd.yaw - yaw), np.cos(cmd.yaw - yaw))))
+        return c.carrot_m * float(np.clip(1.0 - off / np.deg2rad(c.slow_turn_deg), c.slow_turn_min_frac, 1.0))
+
     def plan(self):
         """Advance the planner from the latest pose; ~0.05-0.5 s. Returns the Command or None."""
         from pathplan.ros_node import target_from_command
@@ -258,7 +271,7 @@ class Mission:
             return None
         xyz, yaw, _ = self.pose_course
         cmd = self.planner.update(xyz[:2], yaw)
-        target = target_from_command(cmd, xyz[:2], yaw, self.cfg.carrot_m)
+        target = target_from_command(cmd, xyz[:2], yaw, self._carrot_for(cmd, yaw))
         if cmd.mode == "turn":
             # hold the spot where the turning began (re-holding "here" every step drifted 11 cm
             # toward a wall during a look-around in FlyX run 6)

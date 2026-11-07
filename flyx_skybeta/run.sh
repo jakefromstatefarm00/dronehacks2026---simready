@@ -10,6 +10,7 @@
 #   bash flyx_skybeta/run.sh suraj   [program args]   # suraj_course/suraj_course.py
 #   bash flyx_skybeta/run.sh jolie   [program args]   # jolie_course/jolie_course.py (+ FlyX depth camera)
 #   bash flyx_skybeta/run.sh jolie_flyx [args]        # jolie_course/upload_to_flyx_skybeta.py (FlyX-proven file, Sky Beta I/O)
+#   bash flyx_skybeta/run.sh team       [args]        # team_ws/src/pathfinding (dronehacks_pathplan) from source, no colcon
 #   PILOT=direct bash flyx_skybeta/run.sh ...         # if PX4 refuses the Altitude/Position handshake
 #
 # team_mission (Jake's) has its own launcher: ros2 launch team_mission sim.launch.py (see its README).
@@ -25,7 +26,16 @@ case "$WHAT" in
          STATUS=/dronehacks_pathplan/status ;;
   jolie_flyx) PROG=(python3 -u "$ROOT/jolie_course/upload_to_flyx_skybeta.py" "$@")   # Jolie's FlyX-proven file, Sky Beta I/O
          STATUS=/jolie_flyx/status ;;
-  *) echo "usage: run.sh suraj|jolie|jolie_flyx [args]"; exit 2 ;;
+  team)  # team_ws/src/pathfinding (dronehacks_pathplan) from source, no colcon build needed. Same
+         # parameters as its sim.launch.py; with colcon, prefer: ros2 launch dronehacks_pathplan sim.launch.py
+         TEAM_SRC="$ROOT/team_ws/src/pathfinding"
+         SIMT="${SIM_TIME:-true}"                                  # FlyX publishes /clock
+         PROG=(env PYTHONPATH="$TEAM_SRC${PYTHONPATH:+:$PYTHONPATH}" python3 -u -c
+               "from dronehacks_pathplan.node import main; main()" --ros-args
+               -p use_sim_time:="$SIMT" -p depth_topic:=/camera/depth/image_raw "$@")
+         FI_EXTRA=(-p use_sim_time:="$SIMT")
+         TEAM_PILOT=1; STATUS=/dronehacks_pathplan/status ;;
+  *) echo "usage: run.sh suraj|jolie|jolie_flyx|team [args]"; exit 2 ;;
 esac
 FI_SRC="$ROOT/skybeta/src/skybeta_flight_interface"
 PILOT_SRC="$ROOT/team_ws/src/team_mission"
@@ -50,7 +60,8 @@ trap cleanup INT TERM EXIT
 
 PYTHONPATH="$FI_SRC${PYTHONPATH:+:$PYTHONPATH}" python3 -u -c \
   "from skybeta_flight_interface.flight_interface import main; main()" --ros-args \
-  -p auto_offboard_on_arm:=true -p allow_mode_request:=true > "$OUT/flight_interface.log" 2>&1 &
+  -p auto_offboard_on_arm:=true -p allow_mode_request:=true ${FI_EXTRA[@]+"${FI_EXTRA[@]}"} \
+  > "$OUT/flight_interface.log" 2>&1 &
 pids+=($!)
 sleep 3
 kill -0 "${pids[0]}" 2>/dev/null || { echo "flight interface died:"; tail -20 "$OUT/flight_interface.log"; exit 1; }
@@ -61,9 +72,16 @@ pids+=($!)
 tail -n +1 -f "$OUT/program.log" --pid="${pids[1]}" &
 pids+=($!)
 
+if [ -n "${TEAM_PILOT:-}" ]; then          # the package's own sim pilot (it lands at LOW_HOLD)
+  case "${PILOT:-handshake}" in handshake) PM=drone_like ;; *) PM="$PILOT" ;; esac
+  PYTHONPATH="$TEAM_SRC:$FI_SRC${PYTHONPATH:+:$PYTHONPATH}" python3 -u -c \
+    "from dronehacks_pathplan.sim_pilot import main; main()" --ros-args \
+    -p sim_only:=true -p mode:="$PM" -p exit_when_done:=true > >(tee "$OUT/pilot.log") 2>&1 &
+else
 PYTHONPATH="$PILOT_SRC:$FI_SRC${PYTHONPATH:+:$PYTHONPATH}" python3 -u -c \
   "from team_mission.sim.sim_pilot import main; main()" --ros-args \
   -p mode:="${PILOT:-handshake}" -p status_topic:="$STATUS" > >(tee "$OUT/pilot.log") 2>&1 &
+fi
 PILOT_PID=$!
 # the program died: stop the pilot too (it lands if armed), so this script never waits forever
 ( while kill -0 "${pids[1]}" 2>/dev/null; do sleep 1; done
