@@ -1,12 +1,13 @@
-# pathfinding — online path planner, FlyX programs, Gazebo test bed
+# pathfinding: Jolie's online path planner
 
-Everything needed to run, test and change our pathfinding. Three things live here:
+Everything needed to run, test and change Jolie's pathfinding. It flies as **`jolie_course`**
+(`../jolie_course/`), on the Sky Beta contract, the same interface as on the drone.
 
 | | What | Where |
 |---|---|---|
 | **The algorithm** | Theta\* re-planning on a map built from the published layout and corrected by a depth camera | `pathplan/` |
-| **FlyX** | The planner on native PX4 in the FlyX lab (+ a single-file skybeta node) | `flyx/` |
-| **The simulation** | Offline benchmark (seconds) + Gazebo Harmonic flights in Docker (minutes) | `pathplan/harness.py`, `gzsim/` |
+| **The flight program** | state machine + ROS node on the Sky Beta contract (no `/fmu`) | `flyx/mission.py`, `flyx/fly_pathplan.py` |
+| **The simulation** | Offline benchmark (seconds) | `pathplan/harness.py` |
 
 ## Quick start
 
@@ -15,7 +16,6 @@ cd pathfinding
 python3 -m venv .venv && .venv/bin/pip install -r requirements.txt     # Windows: .venv\Scripts\pip
 .venv/bin/python -m pytest -q tests                                     # 154 tests, ~15 s
 .venv/bin/python -m pathplan.harness --variants 4 --output runs/bench   # offline benchmark, ~4 min
-bash gzsim/run.sh                                                        # Gazebo flight (Linux/WSL + Docker)
 ```
 
 ## The algorithm (`pathplan/`)
@@ -41,24 +41,17 @@ risky; never straighten a path toward walls; replan when the map changes near th
 when stuck, look around, then doubt published walls the camera has not confirmed; accept
 Gate B when the window approach is blocked.
 
-## FlyX (`flyx/`)
-
-**The file to give FlyX is `flyx/upload_to_flyx.py`**: self-contained (FlyX uploads one file
-as `main.py`), native PX4 Offboard via `px4_msgs` (arm, takeoff, course, PX4 land), flies
-by default, `--shadow` to plan only. It is generated from `flyx/fly_pathplan.py`, which runs
-the same program from a clone. Runbook and the first lab runs' fixes: [`flyx/README.md`](flyx/README.md).
+## Flying it (`flyx/`, run as `jolie_course`)
 
 ```bash
-python3 -m flyx.check_lab                                              # read-only lab check
-python3 -m flyx.fly_pathplan --depth-topic /camera/depth/image_raw     # shadow (sends nothing)
-python3 -m flyx.fly_pathplan --execute --depth-topic /camera/depth/image_raw
+bash flyx_skybeta/run.sh jolie                  # FlyX / sim, from the repo root
+python3 jolie_course/jolie_course.py            # on the drone (the pilot arms)
 ```
 
-`flyx/pathplan_mission.py` is the same planner as **one self-contained skybeta node** (a fork
-of the organisers' `square_mission.py`: `/skybeta/state` + `/visual_slam/tracking/odometry`
-in, `/skybeta/setpoint/pose` out; never arms, ends holding over the pad). Use it on a stack
-that runs skybeta (the real drone). It is generated from `ros2/dronehacks_pathplan/` +
-`pathplan/` by `python tools/build_single_file.py` (which builds both single files); do not edit it by hand.
+`flyx/fly_pathplan.py` is the ROS node. It reads `/visual_slam/tracking/odometry` and
+`/skybeta/state` and publishes `/skybeta/setpoint/pose`. It never arms, never changes mode and
+never lands. `flyx/mission.py` is the state machine; it is pure Python and unit-tested. See
+[`flyx/README.md`](flyx/README.md) and [`../jolie_course/README.md`](../jolie_course/README.md).
 
 ## The simulation
 
@@ -70,31 +63,17 @@ unmapped clutter), kinematic drone, ray-cast depth camera. Sky Beta size, Theta\
 | published map only (`static`) | 5 | 8 | 25.4 |
 | **Theta\* replanning** | **13** | 0 | **35.0** |
 
-**Gazebo** (`gzsim/run.sh`): real collisions and multicopter dynamics, Gazebo Harmonic 8.15 in
-Docker, using the course world and Open Robotics X3 quad from
-[machmoon/dronehacks-sim](https://github.com/machmoon/dronehacks-sim) (cloned on first run,
-not our code). `gzsim/make_world.py` adds a forward depth camera (80° FOV) and optional
-unmapped cylinders; `gzsim/fly_planner.py` flies `OnlinePlanner` with ground-truth pose.
+**Gazebo (history).** Earlier versions were flown in a plain Gazebo Harmonic world, using the
+course and the X3 quad from [machmoon/dronehacks-sim](https://github.com/machmoon/dronehacks-sim)
+with ground-truth pose. That test bed (`gzsim/`) has been removed; it is in git history. Results:
 
 | Run | World | Depth | Result |
 |---|---|---|---|
-| 01 | published | off | completed, 59.1 s, 0 contacts, through the window, landed 0.17 m from pad centre |
 | 02 | published | on | completed, 80.3 s, 0 contacts, landed 0.05 m |
 | 05 | + 1 unmapped cylinder | on | completed, 79.0 s, 0 contacts (cylinder included), landed 0.07 m |
 | 06 | same cylinder | **off** | **failed: hit the cylinder** after the tunnel |
-| verify-1 | published | on | completed, 107.2 s, 0 contacts, min clearance 0.369 m (X3 radius 0.36), landed 0.03 m — with tight-spot slow-down |
-| verify-2 | published | on | completed, 92.2 s, 0 contacts, min clearance 0.378 m, landed 0.05 m — same settings, repeat |
-| verify-3 | + 1 unmapped cylinder | on | **failed: stalled** turning in place SE of the cylinder (0 contacts, timeout 240 s); run 05 in the same world completed |
-| commit-1 | + 1 unmapped cylinder | on | completed, 109.1 s, 0 contacts, landed 0.07 m — **with path commitment** (fixes verify-3) |
-| commit-2 | + 1 unmapped cylinder | on | completed, 196.8 s, 0 contacts, landed 0.05 m — safe but over the 180 s run limit |
+| commit-1 | + 1 unmapped cylinder | on | completed, 109.1 s, 0 contacts, landed 0.07 m (with path commitment) |
 | commit-3 | published | on | completed, 98.1 s, 0 contacts, min clearance 0.379 m, landed 0.06 m |
-
-```bash
-bash gzsim/run.sh                          # published course, depth on
-bash gzsim/run.sh --clutter 3              # + unmapped obstacles
-bash gzsim/run.sh --clutter 3 --no-depth   # same world without sensing (expect a crash)
-# watch: http://localhost:8080/vnc.html?autoconnect=1&resize=scale ; results: gzsim/runs/<name>/
-```
 
 **Known limits.** The X3 (radius 0.36 m) is bigger than Sky Beta (0.28 m): the passage over
 maze wall M1 leaves it ~6 cm, so Gazebo runs need the 2.5 cm grid (`--resolution`) and are
@@ -113,11 +92,7 @@ coordinates.
 
 ```
 pathplan/        the algorithm + offline benchmark
-flyx/            FlyX: upload_to_flyx.py (THE upload, generated), fly_pathplan + check_lab (from a clone),
-                 pathplan_mission.py (skybeta single file, generated)
-ros2/            dronehacks_pathplan: the same node as a ROS 2 package (source of the file)
-gzsim/           Gazebo test bed: run.sh, make_world.py, fly_planner.py
-tools/           build_single_file.py (builds both single files)
+flyx/            mission.py (state machine), fly_pathplan.py (ROS node, Sky Beta), px4_link.py (frames)
 course/ config/  the published course (OBJ) and its gate list
 drl/             the team's OBJ -> collision-primitives loader (used by pathplan)
 tests/

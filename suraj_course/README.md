@@ -1,10 +1,10 @@
-# flyx_course: the full course with the friend's waypoint controller
+# suraj_course: Suraj's course flight (route + controller from machmoon/dronehacks-sim)
 
 **Sky Beta contract only, the same interface as on the drone. No `/fmu` topics.**
 
 ```
-bash flyx_skybeta/run.sh course     # FlyX / sim: organizer's flight interface + this + sim pilot
-python3 flyx_course/fly_course.py   # on the drone (the interface is already running; the pilot arms)
+bash flyx_skybeta/run.sh suraj     # FlyX / sim: organizer's flight interface + this + sim pilot
+python3 suraj_course/suraj_course.py   # on the drone (the interface is already running; the pilot arms)
 ```
 
 | | Topic |
@@ -15,7 +15,7 @@ python3 flyx_course/fly_course.py   # on the drone (the interface is already run
 The program never arms, never changes mode and never lands. The safety pilot arms, and the
 organizer's `skybeta_flight_interface` enters Offboard and owns PX4. At the end the program holds
 over the pad. On any fault it holds where it is. Either way it reports `HOLD`, and the pilot lands.
-In sim, `flyx_skybeta/sim_pilot.py` plays the pilot (see `flyx_skybeta/README.md`).
+In sim, `team_mission`'s `sim_pilot` plays the pilot, started by `flyx_skybeta/run.sh` (see `flyx_skybeta/README.md`).
 
 Start on the launch mark, facing up the first corridor (course +y). The course frame is fixed from
 the cuVSLAM pose at that moment.
@@ -42,14 +42,14 @@ What this script adds, each change backed by a measured failure:
   holds. If `/skybeta/state` is silent for 10 s, or there is no valid local position, it holds.
   If Offboard ends (pilot takeover), it stops commanding.
 
-`fly_course.py` is **generated**: edit `fly_course_template.py`, then run
-`python3 flyx_course/build_fly_course.py <path to machmoon/dronehacks-sim>`.
+`suraj_course.py` is **generated**: edit `suraj_course_template.py`, then run
+`python3 suraj_course/build_suraj_course.py <path to machmoon/dronehacks-sim>`.
 Options: `--shadow`, `--speed-scale` (0.65), `--yaw-rate` (0.25), `--corner-deg` (45),
-`--odometry-topic`. Journal: `flyx_course/runs/course-<time>/journal.jsonl`.
+`--odometry-topic`. Journal: `suraj_course/runs/course-<time>/journal.jsonl`.
 
 ## Tested
 
-- **Offline:** `python3 -m pytest -q flyx_course/test_fly_course.py` runs 15 tests against a fake
+- **Offline:** `python3 -m pytest -q suraj_course/test_suraj_course.py` runs 15 tests against a fake
   vehicle, flight interface and pilot. They cover:
   - the full route, the window inside its aperture, and holding over the pad;
   - not moving before the pilot arms;

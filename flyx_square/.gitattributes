@@ -1,5 +1,0 @@
-*.py text eol=lf
-*.md text eol=lf
-*.csv text eol=lf
-*.jsonl text eol=lf
-*.mp4 binary

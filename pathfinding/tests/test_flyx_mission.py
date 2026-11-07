@@ -6,7 +6,7 @@ import pytest
 
 from flyx.mission import Mission, MissionConfig, Telemetry
 from flyx.px4_link import (ARMING_STATE_ARMED, ARMING_STATE_DISARMED, CMD_ARM_DISARM, CMD_DO_SET_MODE,
-                           CMD_NAV_LAND, NAV_STATE_OFFBOARD, course_to_ned_setpoint, find_topic, odom_to_course)
+                           CMD_NAV_LAND, NAV_STATE_OFFBOARD, course_to_ned_setpoint, odom_to_course)
 from pathplan.online import Command as PlanCommand
 
 
@@ -229,16 +229,6 @@ def test_setpoint_round_trip(frame, xy, yaw):
     xyz, yaw_back, rot = odom_to_course(frame, pos, q)
     assert np.allclose(xyz, [*xy, .9]) and np.isclose(np.cos(yaw_back - yaw), 1.0)
     assert np.allclose(rot[:2, 0], [np.cos(yaw), np.sin(yaw)]) and np.allclose(rot[:, 2], [0, 0, 1])
-
-
-def test_find_topic_suffix_and_ambiguity():
-    g = [("/fmu/out/vehicle_status_v1", ["px4_msgs/msg/VehicleStatus"]),
-         ("/fmu/in/vehicle_command", ["px4_msgs/msg/VehicleCommand"]),
-         ("/fmu/in/vehicle_command_mode_executor", ["px4_msgs/msg/VehicleCommand"])]
-    assert find_topic(g, "vehicle_status", "px4_msgs/msg/VehicleStatus") == "/fmu/out/vehicle_status_v1"
-    assert find_topic(g, "vehicle_command", "px4_msgs/msg/VehicleCommand", "in") == "/fmu/in/vehicle_command"
-    g.append(("/fmu/out/vehicle_status", ["px4_msgs/msg/VehicleStatus"]))
-    assert find_topic(g, "vehicle_status", "px4_msgs/msg/VehicleStatus") is None
 
 
 def test_no_planning_on_the_ground():

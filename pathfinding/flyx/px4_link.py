@@ -10,8 +10,7 @@ once from the drone's pose on the launch mark (reviewed placement + launch headi
 from __future__ import annotations
 
 from dataclasses import dataclass
-from math import atan2, cos, nan, sin
-import re
+from math import atan2, cos, sin
 
 import numpy as np
 
@@ -104,15 +103,3 @@ class Command:
         return Command(CMD_NAV_LAND)
 
 
-def find_topic(graph, basename, type_name, direction="out"):
-    """The single /fmu/<direction>/<basename>[_vN] topic of ``type_name`` in a ROS graph, else None.
-
-    PX4 v1.16 adds a version suffix to some outputs (vehicle_status_v1, ...); ambiguity
-    (two matches) is refused rather than guessed.
-    """
-    rx = re.compile(f"/fmu/{direction}/{re.escape(basename)}(_v[0-9]+)?")
-    hits = [t for t, types in graph if rx.fullmatch(t) and type_name in types]
-    return hits[0] if len(hits) == 1 else None
-
-
-NAN3 = [nan, nan, nan]

@@ -38,8 +38,12 @@ MAIN_ALTCTL, MAIN_POSCTL, MAIN_AUTO, SUB_LOITER = 2, 3, 4, 3
 class SimPilot(Node):
     def __init__(self):
         super().__init__('sim_pilot')
+        # status_topic / land_states: missions that hold over the pad and wait for the pilot to land
+        # (suraj_course, jolie_course: /suraj_course/status, /jolie_course/status, state HOLD / LAND).
+        # team_mission lands itself, so the defaults keep the original behaviour.
         for k, v in dict(mode='handshake', wait_s=5.0, timeout_s=240.0, allow_on_drone=False,
-                         require_mission=True).items():
+                         require_mission=True, status_topic='/team_mission/status',
+                         land_states='HOLD,LAND').items():
             self.declare_parameter(k, v)
         g = lambda n: self.get_parameter(n).value  # noqa: E731
         refuse_on_drone('sim_pilot', bool(g('allow_on_drone')))
@@ -56,7 +60,8 @@ class SimPilot(Node):
         self.cmd_pub = self.create_publisher(VehicleCommand, cmd_topic, qos)
         self.man_pub = self.create_publisher(ManualControlSetpoint, man_topic, qos)
         self.create_subscription(String, '/skybeta/state', self.on_state, 10)
-        self.create_subscription(String, '/team_mission/status', self.on_mission, 10)
+        self.create_subscription(String, str(g('status_topic')), self.on_mission, 10)
+        self.land_states = {s.strip() for s in str(g('land_states')).split(',') if s.strip()}
         self.mode = str(g('mode'))
         self.wait_s, self.timeout_s = float(g('wait_s')), float(g('timeout_s'))
         self.require_mission = bool(g('require_mission'))
@@ -113,8 +118,9 @@ class SimPilot(Node):
         armed = bool(st.get('armed'))
         if self.step_name == 'WAIT_READY':
             ready = st.get('px4_link') and st.get('local_enu') is not None
-            if self.require_mission:
-                ready = ready and self.mission.get('phase') == 'DORMANT'
+            if self.require_mission:      # the mission is up and streaming hold setpoints
+                ready = ready and (self.mission.get('phase') == 'DORMANT'
+                                   or self.mission.get('state') in ('STREAM', 'WAIT_OFFBOARD'))
             if ready and dt > self.wait_s:
                 self.goto('MODE')
         elif self.step_name == 'MODE':
@@ -151,6 +157,11 @@ class SimPilot(Node):
             if self.was_armed and not armed:
                 self.get_logger().info(f'disarmed {t - self.flight_t:.1f} s after arming. Flight over.')
                 self.goto('DONE')
+            elif self.mission.get('state') in self.land_states:
+                self.get_logger().info(f'mission reports {self.mission.get("state")} '
+                                       f'({self.mission.get("note", "")}): pilot lands')
+                self.command(CMD_LAND)
+                self.goto('LANDING')
             elif t - self.flight_t > self.timeout_s:
                 self.get_logger().error('timeout: pilot takes over and lands')
                 self.command(CMD_LAND)
@@ -176,8 +187,15 @@ def main(args=None):
     n = SimPilot()
     try:
         rclpy.spin(n)
-    except (KeyboardInterrupt, SystemExit):
+    except SystemExit:
         pass
+    except KeyboardInterrupt:              # Ctrl-C = the pilot takes over: land if still armed
+        if n.state.get('armed'):
+            import time
+            for _ in range(5):
+                n.command(CMD_LAND)
+                time.sleep(0.2)
+            n.get_logger().warn('stopped while armed: LAND sent')
     finally:
         n.destroy_node()
         rclpy.try_shutdown()

@@ -1,18 +1,20 @@
-"""Fly the course in the FlyX lab with the pathplan online planner (native PX4 Offboard).
+"""Jolie's online path planner flying the course on the Sky Beta contract - the same interface
+as on the drone. No /fmu topics: the organizer's skybeta_flight_interface owns PX4.
 
-    cd <repo>/pathfinding
-    python3 -m flyx.fly_pathplan                       # SHADOW: maps + plans, sends nothing to PX4
-    python3 -m flyx.fly_pathplan --execute             # flies: Offboard, arm, takeoff, course, land
+    bash flyx_skybeta/run.sh jolie                 # FlyX / sim: interface + this + sim pilot
+    python3 jolie_course/jolie_course.py           # on the drone (interface up; the pilot arms)
+    --shadow: plan and log, publish no setpoints
 
-Run ``python3 -m flyx.check_lab`` first and pass the topics it reports (--depth-topic,
---camera-info-topic).  Shadow first; --execute only after the team approves the flight
-and the simulator was Reset (see flyx/README.md).
-
-Inputs : PX4 vehicle_odometry, vehicle_status, vehicle_land_detected, vehicle_local_position
-         (/fmu/out/*, version suffix discovered), a depth image + its CameraInfo.
-Outputs: shadow -> nothing to PX4; ~/status and a JSONL journal only.
-         execute -> /fmu/in/offboard_control_mode + trajectory_setpoint (20 Hz), vehicle_command
-         (Offboard, arm, land) exactly as mission.py decides.
+Inputs : /visual_slam/tracking/odometry (cuVSLAM, ENU odom), /skybeta/state, optionally a depth
+         image + its CameraInfo (--depth-topic; FlyX: /camera/depth/image_raw).
+Outputs: /skybeta/setpoint/pose (ENU odom), ~/status (JSON), a JSONL journal.
+It never arms, changes mode or lands: the safety pilot arms (the interface then enters Offboard)
+and lands. mission.py's Offboard / arm / Land requests are therefore not sent (they are journalled
+as pilot actions); its LAND state holds over the pad (or where a guard fired) and reports LAND,
+which is the pilot's cue.
+Frames: odometry is mapped ENU -> NED with the REP-103 map the flight interface itself uses for
+setpoints ((x, y, z)_ned = (y, x, -z)_enu, yaw_ned = pi/2 - yaw_enu), so mission.py's NED logic
+is unchanged; setpoints go back the same way.
 """
 from __future__ import annotations
 
@@ -34,7 +36,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from flyx.mission import Mission, MissionConfig, Telemetry      # noqa: E402
-from flyx.px4_link import NAN3, find_topic, odom_to_course, yaw_from_q_ned  # noqa: E402
+from flyx.px4_link import POSE_FRAME_NED, odom_to_course, yaw_from_q_ned  # noqa: E402
 
 WALL_SNAP_M = .25       # depth returns this close to a published wall are that wall (pose error,
                         # stereo noise): FlyX run 6 lost the tight passage past maze wall M1 to them
@@ -42,19 +44,37 @@ HIT_CONFIRM = 3         # vote threshold for a new obstacle cell: +2 per frame t
                         # frame, so it must be seen in 2 of ~3 frames (single noisy frames are ignored)
 MAX_TURN_RATE = .5      # rad/s: depth frames taken while turning faster are dropped (pose error)
 
-OUT_TOPICS = {                      # basename -> px4_msgs type (discovered with optional _vN suffix)
-    "odom": ("vehicle_odometry", "VehicleOdometry"),
-    "status": ("vehicle_status", "VehicleStatus"),
-    "land": ("vehicle_land_detected", "VehicleLandDetected"),
-    "local": ("vehicle_local_position", "VehicleLocalPosition"),
-    "failsafe_flags": ("failsafe_flags", "FailsafeFlags"),     # optional: the lab may not export it
-}
+ARMED, DISARMED, NAV_OFFBOARD = 2, 1, 14
+_ENU_TO_NED = np.array([[0.0, 1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, -1.0]])   # its own inverse
+_FRD_TO_FLU = np.diag([1.0, -1.0, -1.0])
+
+
+def enu_to_ned(p):
+    """(x, y, z)_ned = (y, x, -z)_enu; the same map converts NED back to ENU."""
+    return (float(p[1]), float(p[0]), -float(p[2]))
+
+
+def quat_wxyz_from_matrix(r):
+    w = np.sqrt(max(0.0, 1 + r[0, 0] + r[1, 1] + r[2, 2])) / 2
+    x = np.copysign(np.sqrt(max(0.0, 1 + r[0, 0] - r[1, 1] - r[2, 2])) / 2, r[2, 1] - r[1, 2])
+    y = np.copysign(np.sqrt(max(0.0, 1 - r[0, 0] + r[1, 1] - r[2, 2])) / 2, r[0, 2] - r[2, 0])
+    z = np.copysign(np.sqrt(max(0.0, 1 - r[0, 0] - r[1, 1] + r[2, 2])) / 2, r[1, 0] - r[0, 1])
+    q = np.array([w, x, y, z])
+    return tuple(q / np.linalg.norm(q))
+
+
+def enu_flu_to_ned_frd(q_wxyz):
+    """Orientation of the FLU body in ENU (cuVSLAM) -> FRD body in NED (what mission.py expects)."""
+    from flyx.px4_link import rotation_wxyz
+    r = _ENU_TO_NED @ rotation_wxyz(np.asarray(q_wxyz, float) / np.linalg.norm(q_wxyz)) @ _FRD_TO_FLU
+    return quat_wxyz_from_matrix(r)
 
 
 def parse_args(argv=None):
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--execute", action="store_true", help="actually fly (default: shadow, nothing sent to PX4)")
-    ap.add_argument("--depth-topic", default="", help="depth sensor_msgs/Image (from check_lab); '' = no sensing")
+    ap.add_argument("--shadow", action="store_true", help="plan and log; publish no setpoints")
+    ap.add_argument("--odometry-topic", default="/visual_slam/tracking/odometry")
+    ap.add_argument("--depth-topic", default="", help="depth sensor_msgs/Image; '' = no sensing (published map only)")
     ap.add_argument("--camera-info-topic", default="", help="CameraInfo of the depth image (default: sibling camera_info)")
     ap.add_argument("--camera-offset", type=float, nargs=3, default=[.115, 0.0, .029],
                     help="depth camera origin in body FLU, m (Sky Beta CAD)")
@@ -65,10 +85,10 @@ def parse_args(argv=None):
     ap.add_argument("--launch-xy", type=float, nargs=2, default=[-2.515, .914])
     ap.add_argument("--launch-heading", type=float, default=1.5707963, help="course-frame heading on the mark, rad")
     ap.add_argument("--launch-body-agl", type=float, default=.05)
-    ap.add_argument("--output", type=Path, default=ROOT / "runs" / f"flyx-{time.strftime('%Y%m%d-%H%M%S')}")
-    ap.add_argument("--wall-clock", action="store_true",
-                    help="use the system clock instead of /clock (only for tests without a simulator)")
-    return ap.parse_args(argv)
+    ap.add_argument("--output", type=Path, default=ROOT.parent / "jolie_course" / "runs"
+                    / f"jolie-{time.strftime('%Y%m%d-%H%M%S')}")
+    a, _ = ap.parse_known_args(argv)
+    return a
 
 
 def safe_carrot_path(cost, spec, xy, path, carrot_m):
@@ -219,15 +239,17 @@ def main(argv=None):
     from rclpy.clock import Clock, ClockType
     from rclpy.executors import MultiThreadedExecutor
     from rclpy.node import Node
-    from rclpy.parameter import Parameter
     from rclpy.qos import qos_profile_sensor_data
-    import px4_msgs.msg as px4
+    from geometry_msgs.msg import PoseStamped
+    from nav_msgs.msg import Odometry
     from sensor_msgs.msg import CameraInfo, Image
     from std_msgs.msg import String
 
+    # the pilot arms and the interface enters Offboard whenever they are ready: no ack timeouts
     mission = Mission(planner, MissionConfig(
-        execute=a.execute, altitude=a.altitude, carrot_m=a.carrot, launch_xy=tuple(a.launch_xy),
-        launch_heading=a.launch_heading, launch_body_agl=a.launch_body_agl, pad_xy=tuple(planner.pad_xy)))
+        execute=not a.shadow, altitude=a.altitude, carrot_m=a.carrot, launch_xy=tuple(a.launch_xy),
+        launch_heading=a.launch_heading, launch_body_agl=a.launch_body_agl, pad_xy=tuple(planner.pad_xy),
+        ack_timeout_s=1e9))
     a.output.mkdir(parents=True, exist_ok=False)
     journal = open(a.output / "journal.jsonl", "w", encoding="utf-8")
 
@@ -249,43 +271,28 @@ def main(argv=None):
         if not log_closed.is_set():           # callbacks may still fire while shutting down
             log_queue.put(json.dumps(record, default=float) + "\n")
 
-    class FlyNode(Node):
+    class SkybetaNode(Node):
         def __init__(self):
-            super().__init__("flyx_pathplan")
-            self.set_parameters([Parameter("use_sim_time", value=not a.wall_clock)])
+            super().__init__("jolie_course")
             self.tel = Telemetry(now=0.0)
+            self.tel.pose_frame = POSE_FRAME_NED  # odometry is mapped to NED below
             self.poses = deque(maxlen=300)      # (ROS time, NED position, q): ~3 s of odometry
             self.poses_lock = threading.Lock()  # odometry thread appends, depth thread reads
             self.depth_stats = {"frames": 0, "matched": 0, "fallback": 0, "turning": 0, "max_odom_delay_s": 0.0}
-            self.failsafe_flags = None
             self.px4_modes, self.stalls = [], []
-            self.offsets = deque(maxlen=200)    # arrival (ROS clock) - PX4 sample time, last ~2 s
             self.intr = None
-            self.subs = {}
-            # PX4 telemetry, depth (slow: ~50-100 ms per frame), planning and control each get their
+            # odometry/state, depth (slow: ~50-100 ms per frame), planning and control each get their
             # own group so a depth frame or a slow plan never delays pose updates or setpoints
             sensors, depth_group, planning, control = (MutuallyExclusiveCallbackGroup() for _ in range(4))
-            self.groups = sensors
-            self.create_timer(1.0, self.discover, callback_group=sensors)
-            # steady clock: a stalled or slow /clock must not stop the setpoint stream (PX4 drops
-            # out of Offboard after COM_OF_LOSS_T without it)
+            # steady clock: a stalled, slow or missing /clock must not stop the setpoint stream
             steady = Clock(clock_type=ClockType.STEADY_TIME)
             self.create_timer(.2, self.on_plan, callback_group=planning, clock=steady)
             self.create_timer(.05, self.on_control, callback_group=control, clock=steady)
-            self.px4_ref = None                 # (latest odometry timestamp us, monotonic arrival)
             self.status_pub = self.create_publisher(String, "~/status", 10)
-            if a.execute:
-                self.mode_pub = self.create_publisher(px4.OffboardControlMode, "/fmu/in/offboard_control_mode",
-                                                      qos_profile_sensor_data)
-                self.sp_pub = self.create_publisher(px4.TrajectorySetpoint, "/fmu/in/trajectory_setpoint",
-                                                    qos_profile_sensor_data)
-                self.cmd_pub = self.create_publisher(px4.VehicleCommand, "/fmu/in/vehicle_command",
-                                                     qos_profile_sensor_data)
-            from rclpy.qos import DurabilityPolicy, QoSProfile
-            from tf2_msgs.msg import TFMessage
-            self.create_subscription(TFMessage, "/tf_static", self.on_tf_static,
-                                     QoSProfile(depth=100, durability=DurabilityPolicy.TRANSIENT_LOCAL),
+            self.sp_pub = None if a.shadow else self.create_publisher(PoseStamped, "/skybeta/setpoint/pose", 10)
+            self.create_subscription(Odometry, a.odometry_topic, self.on_odom, qos_profile_sensor_data,
                                      callback_group=sensors)
+            self.create_subscription(String, "/skybeta/state", self.on_state, 10, callback_group=sensors)
             if a.depth_topic:
                 info = a.camera_info_topic or a.depth_topic.rsplit("/", 1)[0] + "/camera_info"
                 self.create_subscription(Image, a.depth_topic, self.on_depth, qos_profile_sensor_data,
@@ -296,90 +303,52 @@ def main(argv=None):
                 self.get_logger().warn("no --depth-topic: planning on the published map only")
             self.last_state = None
             self.last_tick = None
-            self.get_logger().info(f"flyx_pathplan up: {'EXECUTE' if a.execute else 'SHADOW'}; journal {a.output}")
+            self.last_sky = {}
+            self.get_logger().info(f"jolie_course up (Sky Beta contract, {'SHADOW' if a.shadow else 'FLYING'}); "
+                                   f"odometry {a.odometry_topic}; journal {a.output}. "
+                                   "The pilot arms; the interface enters Offboard.")
 
         def now(self):
             return self.get_clock().now().nanoseconds * 1e-9
 
         # ---------------------------------------------------------- inputs
-        def discover(self):
-            self.check_foreign()
-            graph = self.get_topic_names_and_types()
-            for key, (base, typ) in OUT_TOPICS.items():
-                if key in self.subs:
-                    continue
-                topic = find_topic(graph, base, f"px4_msgs/msg/{typ}")
-                if topic:
-                    self.subs[key] = self.create_subscription(
-                        getattr(px4, typ), topic, lambda msg, k=key: self.on_px4(k, msg), qos_profile_sensor_data,
-                        callback_group=self.groups)
-                    self.get_logger().info(f"{key}: {topic}")
-                    log({"kind": "topic", "key": key, "topic": topic})
-
-        def check_foreign(self):
-            """Another program sending PX4 setpoints (a teammate's script still running, a flight
-            interface): never arm with one; if one appears in flight, the guard lands."""
-            own = 1 if a.execute else 0
-            found = [f"{t} x{n}" for t in ("/fmu/in/trajectory_setpoint", "/fmu/in/offboard_control_mode")
-                     for n in [self.count_publishers(t) - own] if n > 0]
-            foreign = "; ".join(found)
-            if foreign != self.tel.foreign:
-                (self.get_logger().error if foreign else self.get_logger().info)(
-                    "other PX4 setpoint publishers: " + foreign if foreign else "no other PX4 setpoint publisher")
-                log({"kind": "foreign_publishers", "t": self.now(), "note": foreign})
-            self.tel.foreign = foreign
-
-        def on_px4(self, key, msg):
+        def on_odom(self, msg):
             t, tel = time.monotonic(), self.tel        # arrival time, monotonic (see Telemetry)
-            if key == "odom":
-                tel.odom_t, tel.position_ned, tel.q_ned_frd = t, tuple(msg.position), tuple(msg.q)
-                self.px4_ref = (int(msg.timestamp), t)
-                with self.poses_lock:
-                    self.poses.append((self.sample_time(msg), tel.position_ned, tel.q_ned_frd))
-                tel.pose_frame = msg.pose_frame
-            elif key == "status":
-                if msg.nav_state != tel.nav_state or bool(msg.failsafe) != tel.failsafe:
-                    self.px4_modes.append(f"nav_state {int(msg.nav_state)} (asked {int(msg.nav_state_user_intention)})"
-                                          f" failsafe={bool(msg.failsafe)} {self.failsafe_flags or ''}")
-                    log({"kind": "px4_mode", "t": self.now(), "nav_state": int(msg.nav_state),
-                         "requested": int(msg.nav_state_user_intention), "failsafe": bool(msg.failsafe),
-                         "user_took_over": bool(msg.failsafe_and_user_took_over),
-                         "arming_state": int(msg.arming_state), "failsafe_flags": self.failsafe_flags})
-                tel.status_t, tel.arming_state, tel.nav_state = t, msg.arming_state, msg.nav_state
-                tel.failsafe, tel.user_intention = bool(msg.failsafe), int(msg.nav_state_user_intention)
-            elif key == "land":
-                tel.landed_t, tel.landed = t, bool(msg.landed)
-            elif key == "local":
-                tel.local_t, tel.xy_valid, tel.z_valid = t, bool(msg.xy_valid), bool(msg.z_valid)
-            elif key == "failsafe_flags":            # which failsafe condition is set (if exported)
-                self.failsafe_flags = [f for f in msg.get_fields_and_field_types()
-                                       if f != "timestamp" and getattr(msg, f) is True]
+            p, o = msg.pose.pose.position, msg.pose.pose.orientation
+            try:
+                q = enu_flu_to_ned_frd((o.w, o.x, o.y, o.z))
+            except ValueError:
+                return
+            tel.odom_t, tel.position_ned, tel.q_ned_frd = t, enu_to_ned((p.x, p.y, p.z)), q
+            stamp = msg.header.stamp.sec + msg.header.stamp.nanosec * 1e-9
+            with self.poses_lock:
+                self.poses.append((stamp if stamp > 0 else self.now(), tel.position_ned, tel.q_ned_frd))
 
-        def on_tf_static(self, msg):
-            """Log the sim's static transforms once (camera mount vs our --camera-offset)."""
-            log({"kind": "tf_static", "transforms": [
-                {"parent": tr.header.frame_id, "child": tr.child_frame_id,
-                 "xyz": [tr.transform.translation.x, tr.transform.translation.y, tr.transform.translation.z],
-                 "xyzw": [tr.transform.rotation.x, tr.transform.rotation.y, tr.transform.rotation.z,
-                          tr.transform.rotation.w]} for tr in msg.transforms]})
+        def on_state(self, msg):
+            try:
+                st = json.loads(msg.data)
+            except ValueError:
+                return
+            t, tel = time.monotonic(), self.tel
+            armed, offboard = bool(st.get("armed")), bool(st.get("offboard_active"))
+            nav = NAV_OFFBOARD if offboard else 0
+            if nav != tel.nav_state or (ARMED if armed else DISARMED) != tel.arming_state:
+                self.px4_modes.append(f"{st.get('nav_state_name')} armed={armed} offboard_active={offboard}")
+                log({"kind": "px4_mode", "t": self.now(), "nav_state": st.get("nav_state"),
+                     "nav_state_name": st.get("nav_state_name"), "armed": armed, "offboard_active": offboard})
+            tel.status_t = tel.local_t = tel.landed_t = t
+            tel.arming_state, tel.nav_state, tel.user_intention = (ARMED if armed else DISARMED), nav, nav
+            tel.landed = not armed                      # the pilot lands and disarms
+            tel.xy_valid = tel.z_valid = bool(st.get("px4_link")) and st.get("local_enu") is not None
+            if st.get("clamped") and st.get("clamped") != self.last_sky.get("clamped"):
+                log({"kind": "clamped", "t": self.now(), "clamped": st.get("clamped")})
+            self.last_sky = st
 
         def on_info(self, msg):
             if self.intr is None:
                 self.intr = list(msg.k)
                 log({"kind": "camera_info", "k": list(msg.k), "width": msg.width, "height": msg.height,
                      "frame_id": msg.header.frame_id})
-
-        def sample_time(self, msg):
-            """When the odometry was measured, on the ROS clock. Its arrival time can lag by the
-            time it sat in our queue (100s of ms on a loaded CPU), which misplaces depth during
-            turns. PX4's own sample time is on PX4's clock: map it with the smallest
-            arrival - sample offset of the last ~2 s (the least-delayed message)."""
-            px4_t = (msg.timestamp_sample or msg.timestamp) * 1e-6
-            arrival = self.now()
-            self.offsets.append(arrival - px4_t)
-            t = px4_t + min(self.offsets)
-            self.depth_stats["max_odom_delay_s"] = max(self.depth_stats["max_odom_delay_s"], round(arrival - t, 3))
-            return t
 
         def pose_at(self, stamp):
             """(course pose when the image was taken, yaw rate then): odometry nearest its header
@@ -426,13 +395,12 @@ def main(argv=None):
         def on_control(self):
             mono, sim = time.monotonic(), self.now()
             if self.last_tick is not None:                     # control timer is 20 Hz
-                gap_mono, gap_sim = mono - self.last_tick[0], sim - self.last_tick[1]
-                if gap_mono > .15:
-                    self.stalls.append(gap_mono)
-                if gap_mono > .15 or abs(gap_sim - gap_mono) > .15:
-                    log({"kind": "timing", "t": sim, "gap_s": round(gap_mono, 3), "clock_gap_s": round(gap_sim, 3)})
-            self.last_tick = (mono, sim)
-            self.tel.now, self.tel.sim_now = mono, sim
+                gap = mono - self.last_tick
+                if gap > .15:
+                    self.stalls.append(gap)
+                    log({"kind": "timing", "t": sim, "gap_s": round(gap, 3)})
+            self.last_tick = mono
+            self.tel.now, self.tel.sim_now = mono, None        # flight limit on the steady clock
             out = mission.tick(self.tel)
             if out.state != self.last_state:
                 note = mission.events[-1]["note"] if mission.events and mission.events[-1]["to"] == out.state else ""
@@ -443,61 +411,30 @@ def main(argv=None):
             self.status_pub.publish(String(data=json.dumps({
                 "state": out.state, "note": out.note, "planner": mission.planner_status,
                 "cleared": [c["name"] for c in planner.cleared]})))
-            if not a.execute:
-                return
-            us = self.px4_us()
-            if out.setpoint is not None:
-                mode = px4.OffboardControlMode()
-                mode.timestamp, mode.position = us, True
-                self.mode_pub.publish(mode)
-                pos, yaw = out.setpoint
-                sp = px4.TrajectorySetpoint()
-                sp.timestamp = us
-                sp.position = [float(v) for v in pos]
-                sp.velocity, sp.acceleration, sp.jerk = NAN3, NAN3, NAN3
-                sp.yaw, sp.yawspeed = float(yaw), float("nan")
-                self.sp_pub.publish(sp)
-            if out.command is not None:
-                cmd = px4.VehicleCommand()
-                cmd.timestamp, cmd.command = us, out.command.command
-                cmd.param1, cmd.param2 = float(out.command.param1), float(out.command.param2)
-                cmd.target_system, cmd.target_component = 1, 1
-                cmd.source_system, cmd.source_component, cmd.from_external = 1, 1, True
-                self.cmd_pub.publish(cmd)
-                log({"kind": "command", "t": sim, "command": out.command.command,
-                     "param1": out.command.param1, "param2": out.command.param2, "state": out.state})
+            if out.command is not None:                        # Offboard / arm / Land: the pilot does these
+                log({"kind": "pilot_action", "t": sim, "command": out.command.command, "state": out.state})
+            if out.setpoint is None or self.sp_pub is None:
+                return                                         # pose setpoints persist: the interface holds
+            pos, yaw = out.setpoint
+            msg = PoseStamped()
+            msg.header.stamp = self.get_clock().now().to_msg()
+            msg.header.frame_id = "odom"
+            msg.pose.position.x, msg.pose.position.y, msg.pose.position.z = enu_to_ned(pos)   # same map back
+            yaw_enu = math.pi / 2 - float(yaw)
+            msg.pose.orientation.w, msg.pose.orientation.z = math.cos(yaw_enu / 2), math.sin(yaw_enu / 2)
+            self.sp_pub.publish(msg)
 
-        def px4_us(self):
-            """A timestamp in PX4's own time base (what its odometry carries), 20 ms in the past
-            so it can never read as future. Sim-time stamps run slow against PX4's clock when
-            the sim is slower than real time, and PX4 then sees our Offboard stream as stale."""
-            if self.px4_ref is None:
-                return int(self.get_clock().now().nanoseconds / 1000)
-            ts, arrival = self.px4_ref
-            return max(0, int(ts + (time.monotonic() - arrival) * 1e6) - 20_000)
-
-        def land_if_airborne(self):
-            if a.execute and mission.state in ("WAIT_ARM", "TAKEOFF", "NAVIGATE"):
-                cmd = px4.VehicleCommand()
-                cmd.timestamp = self.px4_us()
-                cmd.command, cmd.target_system, cmd.target_component = 21, 1, 1
-                cmd.source_system, cmd.source_component, cmd.from_external = 1, 1, True
-                self.cmd_pub.publish(cmd)
-                log({"kind": "command", "t": self.now(), "command": 21, "note": "shutdown while airborne"})
-
-    # Ctrl-C must reach our handler while ROS still works, so Land can still be published
-    # (rclpy's default handler shuts the context down first).
     from rclpy.signals import SignalHandlerOptions
     rclpy.init(signal_handler_options=SignalHandlerOptions.NO)
 
-    def interrupt(signum, frame):              # Ctrl-C and SIGTERM (a lab Stop) both land
+    def interrupt(signum, frame):
         raise KeyboardInterrupt
     signal.signal(signal.SIGINT, interrupt)
     signal.signal(signal.SIGTERM, interrupt)
-    node = FlyNode()
+    node = SkybetaNode()
     executor = MultiThreadedExecutor(num_threads=4)
     executor.add_node(node)
-    # the executor spins on its own thread; the main thread only waits for the end (or Ctrl-C)
+
     def spin():
         try:
             executor.spin()
@@ -511,13 +448,10 @@ def main(argv=None):
     try:
         while rclpy.ok() and spinner.is_alive() and mission.state not in ("DONE", "FAILED", "TAKEN_OVER"):
             time.sleep(.1)
-        if not spinner.is_alive():              # never leave the vehicle airborne without us
-            node.get_logger().error(f"executor stopped in {mission.state}; landing if airborne")
-            node.land_if_airborne()
-            time.sleep(.3)
+        if not spinner.is_alive():              # the interface holds the last pose; the pilot lands
+            node.get_logger().error(f"executor stopped in {mission.state}: the pilot must land")
     except KeyboardInterrupt:
-        node.land_if_airborne()
-        time.sleep(.3)                        # let the Land command go out before tearing down
+        pass                                    # pose setpoints persist: the interface holds; the pilot lands
     finally:
         log({"kind": "end", "state": mission.state, "events": mission.events, "depth": node.depth_stats,
              "depth_quality": planner.depth_quality,

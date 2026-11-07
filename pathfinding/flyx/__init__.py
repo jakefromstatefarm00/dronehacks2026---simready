@@ -1,8 +1,7 @@
-"""Deliverable for the organisers' FlyX cloud lab: the pathplan online planner flying
-the course through native PX4 (px4_msgs) Offboard control.
+"""Jolie's planner as a flight program on the Sky Beta contract (run as jolie_course).
 
-    check_lab.py     read-only: real topic names / types / rates, run FIRST in the lab
-    fly_pathplan.py  the mission program (shadow by default, --execute to fly)
+    fly_pathplan.py  the ROS node (/visual_slam/tracking/odometry + /skybeta/state in,
+                     /skybeta/setpoint/pose out; no /fmu)
     mission.py       the mission state machine (pure Python, unit-tested offline)
-    px4_link.py      PX4 frames and commands (pure Python, unit-tested offline)
+    px4_link.py      frames and constants (pure Python, unit-tested offline)
 """

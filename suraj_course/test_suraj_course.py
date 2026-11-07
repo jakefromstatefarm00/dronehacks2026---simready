@@ -1,14 +1,14 @@
-"""Offline tests of fly_course.py's CourseMission (Sky Beta contract) against a kinematic stand-in
+"""Offline tests of suraj_course.py's CourseMission (Sky Beta contract) against a kinematic stand-in
 for PX4 + the flight interface + the safety pilot (no ROS).
 
-    python3 -m pytest -q flyx_course/test_fly_course.py
+    python3 -m pytest -q suraj_course/test_suraj_course.py
 """
 from math import cos, sin
 import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-import fly_course as m  # noqa: E402
+import suraj_course as m  # noqa: E402
 
 # cuVSLAM odom at start-up: arbitrary origin and heading (the vehicle faces up the first corridor)
 ODOM0, ODOM_YAW0 = (0.02, -0.01, 0.0), 0.35
@@ -109,7 +109,7 @@ def seg_dist(p, a, b):
 
 
 def max_off_route(veh, mission):
-    """Largest distance of the flown path (above 0.3 m) from the friend's route polyline."""
+    """Largest distance of the flown path (above 0.3 m) from the route polyline."""
     pts = [tuple(m.ROUTE["start"])] + [w["position"] for w in mission.ctrl.waypoints]
     h = mission.ctrl.handoff_target
     pts.append((h[0], h[1], 0.0))                        # the pilot lands straight down
@@ -118,7 +118,7 @@ def max_off_route(veh, mission):
 
 
 def test_no_fmu_topics_in_the_program():
-    src = (Path(__file__).resolve().parent / "fly_course.py").read_text(encoding="utf-8")
+    src = (Path(__file__).resolve().parent / "suraj_course.py").read_text(encoding="utf-8")
     body = src.split('"""', 2)[2]                        # skip the docstring that says so
     assert "/fmu" not in body and "VehicleCommand" not in body and "px4_msgs" not in body
 
