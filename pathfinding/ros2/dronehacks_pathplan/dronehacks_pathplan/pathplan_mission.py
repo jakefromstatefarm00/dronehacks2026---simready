@@ -55,6 +55,7 @@ from std_msgs.msg import String
 PLAN_ABOVE_M = 0.5          # no mapping/planning below this: on the ground the camera sits 5 cm up
 ODOM_PAUSE_S = 0.3          # odometry older than this: hold the last setpoint (cuVSLAM pauses ~0.7 s)
 PAD_CENTRE_TIMEOUT_S = 8.0  # give up centring over the pad after this and descend anyway
+SLOW_TURN_DEG = 60.0        # carrot shrinks to 30 % as the heading error reaches this (see carrot_for)
 ODOM_LOST_S = 3.0           # in the air, odometry missing this long: hold here, the pilot lands
 STATE_LOST_S = 10.0         # /skybeta/state silent this long in the air: hold here, the pilot lands
 
@@ -289,13 +290,22 @@ class PathplanMission(Node):
         return self.sp_yaw
 
     # ------------------------------------------------------------------ planner thread
+    def carrot_for(self, cmd, yaw):
+        """Setpoint distance: shorter while the nose is still turning toward the route, so the
+        drone slows through corners instead of swinging wide (0.5 m aligned, 0.15 m at 60 deg).
+        From Jolie's jolie_course/upload_to_flyx.py, which completed the whole course in FlyX."""
+        if cmd.mode != 'move' or cmd.yaw is None:
+            return self.carrot
+        off = abs(_wrap(cmd.yaw - yaw))
+        return self.carrot * float(np.clip(1.0 - off / np.deg2rad(SLOW_TURN_DEG), .3, 1.0))
+
     def plan_tick(self):
         if not self.planning_allowed():
             return
         from pathplan.ros_node import target_from_command
         xyz, yaw, _ = self.pose_course
         cmd = self.planner.update(xyz[:2], yaw)    # blocks this thread only, not the odometry callbacks
-        target = target_from_command(cmd, xyz[:2], yaw, self.carrot)
+        target = target_from_command(cmd, xyz[:2], yaw, self.carrot_for(cmd, yaw))
         if cmd.mode == 'turn':
             # hold the spot where the turning began: re-holding "here" every step let the vehicle
             # drift 11 cm during a look-around in FlyX run 6, toward a wall

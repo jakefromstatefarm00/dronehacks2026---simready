@@ -21,6 +21,12 @@ WALL_SNAP_M = .25       # depth returns this close to a published wall are that 
 HIT_CONFIRM = 3         # vote threshold for a new obstacle cell: +2 per frame that hits it, -1 per
                         # frame, so it must be seen in 2 of ~3 frames (single noisy frames are ignored)
 MAX_TURN_RATE = .5      # rad/s: depth frames taken while turning faster are dropped (pose error)
+# Keep moving while the nose turns toward the route up to this far off; stop and turn in place only
+# beyond it. With the heading capped at 0.25 rad/s (VIO), the planner's 30 deg made the drone stop
+# and turn in place 21-26 times per fake-PX4 flight, and a full stop followed by turning in place is
+# what lost visual odometry in Suraj's Gazebo v131. (From Jolie's jolie_course/upload_to_flyx.py,
+# which completed the whole course in FlyX.)
+TURN_IN_PLACE_DEG = 60.0
 
 
 def safe_carrot_path(cost, spec, xy, path, carrot_m):
@@ -51,6 +57,7 @@ def planner_process(conn, build_planner):
     from .depth_projection import CameraMount, Intrinsics, decode_depth_image, drop_misregistered, project_depth
     from .world import clearance
     planner, spec, env, prior = build_planner(planner_name, altitude)
+    planner.cfg.turn_in_place_deg = TURN_IN_PLACE_DEG
     near_wall = (clearance(prior, spec) < WALL_SNAP_M) & ~prior
     mount = CameraMount(offset=tuple(camera_offset), pitch_down_deg=pitch_down_deg)
     votes = np.zeros(prior.shape, np.int8)
