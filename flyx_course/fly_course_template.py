@@ -33,7 +33,9 @@ SPEED_SCALE = 0.65   # friend's validated default for this route (Gazebo: 61.8 s
 LEAD_S = 0.6        # PX4 position target leads the route reference by this (clamped at the next waypoint)
 FF_FRAC = 0.4       # fraction of the reference velocity sent as feedforward
 LEASH_M = 0.25       # freeze the route setpoint when the drone lags it by more than this
-YAW_RATE_MAX = 0.5   # rad/s cap on the controller's yaw rate (theirs: 0.7)
+YAW_RATE_MAX = 0.25  # rad/s cap on the controller's yaw rate (theirs: 0.7). Visual odometry dies on
+                     # fast turns: FlyX run 1 of this script lost xy ~3 s after the first maze corner at
+                     # 0.5 rad/s; our failure maps had 30/40 deaths at yaw rates > 0.35 rad/s.
 CORNER_DEG = 45.0    # waypoints turning more than this are "sharp corners"
 CORNER_ZONE_M = 0.5  # approaching a sharp corner: brake at CORNER_ACC, no lead, no feedforward ...
 CORNER_ACC = 0.3
@@ -402,6 +404,7 @@ def main(argv=None):
     ap.add_argument("--shadow", action="store_true", help="never publish to PX4")
     ap.add_argument("--speed-scale", type=float, default=SPEED_SCALE)
     ap.add_argument("--settle-s", type=float, default=SETTLE_S)
+    ap.add_argument("--yaw-rate", type=float, default=YAW_RATE_MAX, help="max yaw rate, rad/s")
     ap.add_argument("--corner-deg", type=float, default=CORNER_DEG,
                     help="brake into turns sharper than this (180: never)")
     ap.add_argument("--wall-clock", action="store_true", help="tests without a simulator /clock")
@@ -416,7 +419,8 @@ def main(argv=None):
     import px4_msgs.msg as px4
     from std_msgs.msg import String
 
-    mission = CourseMission(speed_scale=a.speed_scale, settle=a.settle_s, corner_deg=a.corner_deg)
+    mission = CourseMission(speed_scale=a.speed_scale, settle=a.settle_s, corner_deg=a.corner_deg,
+                            yaw_rate_max=a.yaw_rate)
     out_dir = journal_dir()
     journal = open(out_dir / "journal.jsonl", "w", encoding="utf-8") if out_dir else None
     jlock = threading.Lock()

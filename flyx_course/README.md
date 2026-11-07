@@ -88,18 +88,22 @@ footprint proxy has a radius of 0.28 m.
 | v129 | reference stops at corners | complete | 0.252 m | 0.08 m |
 | v130 | — | PX4 refused to arm (sim start-up); stayed on the ground | — | — |
 | v131 | stop + slow approach | visual odometry lost in the maze; landed on "estimator invalid" | 0.128 m | — |
-| **v132** | **current: corner braking, no stop** | **complete** | **0.302 m** | **0.04 m** |
+| v132 | corner braking, no stop, yaw ≤ 0.5 rad/s | complete | 0.302 m | 0.04 m |
 | v133 | `--corner-deg 180` (no corner braking) | complete | 0.184 m | 0.09 m |
-| **v134** | current | visual odometry lost on the same maze leg as v131; the divergence guard landed (truth 3.8 m from the pad) | — | — |
-| **v135** | current | **complete** | **0.298 m** | **0.05 m** |
+| v134 | corner braking, yaw ≤ 0.5 rad/s | visual odometry lost on the same maze leg as v131; the divergence guard landed (truth 3.8 m from the pad) | — | — |
+| v135 | corner braking, yaw ≤ 0.5 rad/s | complete | 0.298 m | 0.05 m |
+| **v136** | **current: + yaw ≤ 0.25 rad/s** | **complete** | **0.297 m** | **0.05 m** |
+| **v137** | current | **complete** (ran 0.15 m low through the window: height estimate) | 0.154 m | 0.05 m |
+| **v138** | current | **complete** (visual odometry drifted 0.9 m at the maze corner, then recovered) | 0.181 m | 0.05 m |
 
-**Current version: 2 of 3 complete (v132, v135), with no truth point inside the 0.28 m footprint.**
-Both visual-odometry losses (v131, v134) happened on the maze's top leg (x −1.9 to −1.2,
-y ≈ 2.5) with Gazebo's OpenVINS. That leg is weak for this estimator. The FlyX lab's estimator
-may behave differently.
+**Current version (yaw rate ≤ 0.25 rad/s): 3 of 3 complete, about 50–62 s in the air.** At
+0.5 rad/s, visual odometry was lost twice (v131, v134), both times right after a 90° corner
+turn. FlyX run 1 of this script did the same: xy invalid about 3 s after the first maze corner.
+Our earlier failure maps had 30 of 40 visual-odometry deaths at yaw rates above 0.35 rad/s.
+The close passes in v137 and v138 came from the estimate, not from control.
 
 The divergence guard was added after v131. In that run the estimate ran away for about 8 s
 before PX4 flagged it.
 
-Options: `--speed-scale` (default 0.65), `--corner-deg` (default 45; 180 turns corner braking
+Options: `--speed-scale` (default 0.65), `--yaw-rate` (default 0.25 rad/s), `--corner-deg` (default 45; 180 turns corner braking
 off), `--settle-s`, `--shadow`.
