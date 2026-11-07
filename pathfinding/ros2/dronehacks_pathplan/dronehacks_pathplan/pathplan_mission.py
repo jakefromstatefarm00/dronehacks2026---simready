@@ -43,7 +43,7 @@ import time
 import numpy as np
 import rclpy
 from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
-from rclpy.executors import ExternalShutdownException, MultiThreadedExecutor
+from rclpy.executors import ExternalShutdownException, SingleThreadedExecutor
 from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
 
@@ -153,11 +153,12 @@ class PathplanMission(Node):
         self.pad_since = None
         self.pad_centred = False
         self.intr = None                   # CameraInfo K
-        self.depth_stats = {'frames': 0, 'matched': 0, 'fallback': 0, 'turning': 0}
+        self.depth_stats = {'frames': 0, 'matched': 0, 'fallback': 0, 'unmatched': 0, 'turning': 0}
         self.log_once = set()
 
         self.create_timer(1.0 / float(g('publish_rate_hz')), self.tick, callback_group=control)
-        self.create_timer(1.0 / float(g('plan_rate_hz')), self.plan_tick, callback_group=planning)
+        # planning (blocks on the planner process for up to ~1 s) runs on its own thread, see main()
+        self.plan_period = 1.0 / float(g('plan_rate_hz'))
         self.get_logger().info(
             f'dronehacks_pathplan ready ({"SHADOW: no setpoints" if self.shadow else "flying"}): '
             f'planner {g("planner")}, altitude {self.altitude:.2f} m, depth {"on" if depth else "off"}. '
@@ -204,6 +205,9 @@ class PathplanMission(Node):
                 pose = self.frame.odometry_to_course(pos, q)
                 dyaw = _wrap(pose[1] - self.frame.odometry_to_course(pos0, q0)[1])
                 return pose, abs(dyaw) / max(t - t0, .05)
+            if self.depth_stats['matched'] >= 20:      # stamps do match normally: this frame fell in a
+                self.depth_stats['unmatched'] += 1      # gap in the pose history (a stall) - skip it
+                return None, 0.0
         self.depth_stats['fallback'] += 1          # unstamped / other clock: the latest pose
         return self.pose_course, 0.0
 
@@ -418,8 +422,24 @@ def main(args=None):
     planner = PlannerProcess(build_planner)    # first: it forks, which is only safe before ROS threads exist
     rclpy.init(args=args)
     node = PathplanMission(planner)
-    executor = MultiThreadedExecutor(num_threads=4)
+    # Single-threaded executor: every ROS callback is short. Jolie measured the MultiThreadedExecutor
+    # at ~73 % of a core on this message load (single: ~13 %), and a CPU-hungry process is the one a
+    # crowded lab machine starves (FlyX run 7: 86 stalls up to 1.95 s, even before arming).
+    executor = SingleThreadedExecutor()
     executor.add_node(node)
+    planning_stop = threading.Event()
+
+    def planning_loop():                       # plan_rate_hz, outside the executor
+        while not planning_stop.is_set():
+            t0 = time.monotonic()
+            try:
+                node.plan_tick()
+            except Exception as e:             # keep flying on the last plan; the log says why
+                node.get_logger().error(f'planning step failed: {e!r}')
+            planning_stop.wait(max(0.0, node.plan_period - (time.monotonic() - t0)))
+
+    planning_thread = threading.Thread(target=planning_loop, daemon=True)
+    planning_thread.start()
     try:
         executor.spin()
     except (KeyboardInterrupt, ExternalShutdownException):
@@ -428,6 +448,8 @@ def main(args=None):
         if rclpy.ok():
             raise
     finally:
+        planning_stop.set()
+        planning_thread.join(timeout=3.0)  # finish the step in flight before closing its pipe
         node.summary()
         executor.shutdown()
         planner.close()
