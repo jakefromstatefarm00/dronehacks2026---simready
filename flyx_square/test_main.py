@@ -39,9 +39,10 @@ class FakePX4:
                 tel.landed = p[2] < self.ground_z - .05 and False or tel.landed and p[2] >= self.ground_z - .02
         tel.position = tuple(p)
         tel.now = t
+        tel.sim_now = t if not getattr(self, 'sim_frozen', False) else tel.sim_now
         tel.local_t = tel.status_t = tel.landed_t = t
         if not stale_odom:
-            tel.odom_t = t
+            tel.odom_t, tel.odom_sim = t, tel.sim_now
         self.trace.append(tuple(p))
 
 
@@ -106,3 +107,25 @@ def test_short_local_position_gap_does_not_land():
         _, sp, cmd, _ = mission.tick(px4.tel)
         t += .05
     assert mission.state == "DONE", mission.events[-2:]
+
+
+def test_odometry_pause_while_sim_paused_does_not_land():
+    """FlyX lab 2026-11-07: odometry paused right after arming (lab stream/sim stall) and the old
+    0.3 s wall-clock guard landed the vehicle. A pause of sim time AND odometry is not stale."""
+    px4, mission = FakePX4(), m.SquareMission()
+    sp = cmd = None
+    t = 0.0
+    while t < 200 and mission.state not in ("DONE", "FAILED", "TAKEN_OVER"):
+        frozen = 14.0 < t < 15.0                     # 1 s: no odometry, sim clock stands still
+        px4.sim_frozen = frozen
+        px4.step(t, sp, cmd, stale_odom=frozen)
+        _, sp, cmd, _ = mission.tick(px4.tel)
+        t += .05
+    assert mission.state == "DONE", mission.events[-2:]
+
+
+def test_odometry_outage_with_sim_running_lands():
+    px4, mission = FakePX4(), m.SquareMission()
+    run(px4, mission, stale_after=16.0)              # sim keeps running, odometry stops
+    land = [e for e in mission.events if e.get("to") == "LAND"]
+    assert land and "odometry stale" in land[0]["note"] and "sim" in land[0]["note"]

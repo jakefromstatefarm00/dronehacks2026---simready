@@ -19,7 +19,7 @@ climb 0.9 m -> forward 0.6 m -> up 0.6 m -> back 0.6 m -> down 0.6 m -> land (na
   the heading PX4 reports on the ground. No course alignment needed.
 - **Flow and guards** follow `pathfinding/flyx/mission.py` (FlyX-tested): wait for fresh
   odometry/status/local position, valid estimator, landed + disarmed for `SETTLE_S` (10 s); stream hold
-  setpoints 1 s; Offboard; arm; fly. Lands on stale odometry (> 0.3 s), stale local position
+  setpoints 1 s; Offboard; arm; fly. Lands on stale odometry (no message for 0.5 s of both wall and sim time, or 1.5 s wall), stale local position
   (> 2 s; FlyX run 3 saw a 0.69 s gap) or status (> 3 s), invalid estimator, a corner not reached in time, or 120 s.
   Ages use a monotonic clock (the lab's sim clock jumps). Ctrl-C / lab Stop lands.
   If PX4 leaves Offboard by itself it stops commanding.
@@ -47,5 +47,14 @@ climb 0.9 m -> forward 0.6 m -> up 0.6 m -> back 0.6 m -> down 0.6 m -> land (na
   Hence the 10 s default settle (the lab's estimator has run since Reset world, so it
   should be healthy well within that).
 
-Not tested: the FlyX lab itself (its cuVSLAM, its rendering). First lab run: watch the
-journal for the WAIT_HEALTH reason if it never arms.
+## FlyX lab run 1 (2026-11-07) and the fix
+
+Armed, climbed ~half a second, then `FLY -> LAND: unhealthy: odometry stale` 2.8 s after
+arming. PX4 publishes `vehicle_odometry` continuously from its EKF, so this was the lab's
+message stream / simulation pausing (its `/clock` arrives in bursts; teammates' FlyX run 3
+saw a 0.69 s `local_position` pause), not a lost estimate. The old guard was 0.3 s of wall
+time. Now odometry is stale only after 0.5 s of **both** wall and sim time without a message
+(if the sim paused, PX4 paused too), or 1.5 s of wall time regardless. Tests reproduce both
+cases. The journal now also logs every stream pause (`gap`), control-loop stalls
+(`control_gap`) and a 2 Hz `tel` record (ages, validity, mode, position) - send it over
+after the next lab run. Re-flown in Gazebo after the change: v125, square complete, exit 0.

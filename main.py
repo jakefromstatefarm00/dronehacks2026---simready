@@ -19,7 +19,8 @@ Sequence (the FlyX-tested flow of pathfinding/flyx/mission.py):
     WAIT_HEALTH  fresh odometry, status, local position xy/z valid, landed + disarmed, SETTLE_S (10 s)
     STREAM       hold setpoints for 1 s (PX4 needs a stream before Offboard)
     OFFBOARD -> ARM -> TAKEOFF -> legs of the square (setpoint moves at SPEED_MPS) -> LAND -> DONE
-Guards while airborne: stale odometry (> 0.3 s) / local position (> 2 s) / status (> 3 s),
+Guards while airborne: stale odometry (> 0.5 s of both wall and sim time, or 1.5 s wall) /
+local position (> 2 s) / status (> 3 s),
 estimator invalid, a leg not reached in LEG_TIMEOUT_S, total flight over MAX_FLIGHT_S -> Land.
 If PX4 leaves Offboard by itself (failsafe, RC) it stops commanding (TAKEN_OVER).
 Ctrl-C / SIGTERM (lab Stop) while airborne -> Land.
@@ -35,7 +36,9 @@ HOLD_S = 1.0         # pause at each corner
 TOLERANCE_M = 0.12   # corner reached when PX4's position is this close (3-D)
 LEG_TIMEOUT_S = 20.0
 MAX_FLIGHT_S = 120.0
-SETTLE_S = 10.0      # healthy + landed this long before Offboard/arm. 2 s (pathfinding/flyx) was too
+ODOM_MAX_AGE_S = 0.5   # odometry stale after this much wall AND sim time without a message
+ODOM_HARD_AGE_S = 1.5  # ... or after this much wall time regardless (a real outage)
+SETTLE_S = 10.0     # healthy + landed this long before Offboard/arm. 2 s (pathfinding/flyx) was too
                      # short in our Gazebo run v122 (OpenVINS lost all features at liftoff 4 s after the
                      # rig set the drone down); v123 with a longer settle flew the square cleanly.
 
@@ -77,8 +80,10 @@ def find_topic(graph, basename, type_name):
 
 class Telemetry:
     def __init__(self):
-        self.now = 0.0
+        self.now = 0.0          # monotonic wall clock
+        self.sim_now = None     # simulation clock (None: not available, e.g. tests on wall clock)
         self.odom_t = self.status_t = self.landed_t = self.local_t = None
+        self.odom_sim = None    # sim time at the last odometry arrival
         self.position = (0.0, 0.0, 0.0)
         self.q = (1.0, 0.0, 0.0, 0.0)
         self.pose_frame = POSE_FRAME_NED
@@ -105,11 +110,35 @@ class SquareMission:
         self.state, self.t_state = state, now
 
     @staticmethod
+    def odometry_stale(tel):
+        """Stale = no odometry for ODOM_MAX_AGE_S of BOTH wall and sim time, or ODOM_HARD_AGE_S of wall.
+
+        FlyX lab run (2026-11-07) landed 2.8 s after arming on "odometry stale" with the old
+        0.3 s wall-clock rule: PX4 publishes vehicle_odometry continuously from its EKF, so a
+        0.3 s gap is the lab's message stream / simulation pausing (the lab's /clock arrives in
+        bursts; FlyX run 3 saw a 0.69 s local_position gap). If sim time also stood still, PX4
+        did too and nothing has gone stale; a real outage still lands within ODOM_HARD_AGE_S.
+        """
+        if tel.odom_t is None:
+            return "odometry never received"
+        wall = tel.now - tel.odom_t
+        if wall > ODOM_HARD_AGE_S:
+            return f"odometry stale ({wall:.2f} s wall)"
+        if wall > ODOM_MAX_AGE_S:
+            if tel.sim_now is None or tel.odom_sim is None:
+                return f"odometry stale ({wall:.2f} s wall)"
+            sim = tel.sim_now - tel.odom_sim
+            if sim > ODOM_MAX_AGE_S:
+                return f"odometry stale ({wall:.2f} s wall, {sim:.2f} s sim)"
+        return ""
+
+    @staticmethod
     def unhealthy(tel):
         now = tel.now
         fresh = lambda t, age: t is not None and now - t <= age
-        if not fresh(tel.odom_t, .3):
-            return "odometry stale"
+        stale = SquareMission.odometry_stale(tel)
+        if stale:
+            return stale
         if tel.pose_frame != POSE_FRAME_NED:
             return f"odometry frame {tel.pose_frame} is not NED"
         if not fresh(tel.status_t, 3.0):
@@ -252,6 +281,7 @@ def main(argv=None):
     ap.add_argument("--wall-clock", action="store_true", help="tests without a simulator /clock")
     a, _unknown = ap.parse_known_args(argv)           # ignore launcher extras (e.g. --ros-args)
     import rclpy
+    from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
     from rclpy.executors import MultiThreadedExecutor
     from rclpy.node import Node
     from rclpy.parameter import Parameter
@@ -276,6 +306,9 @@ def main(argv=None):
             super().__init__("flyx_square")
             self.set_parameters([Parameter("use_sim_time", value=not a.wall_clock)])
             self.tel, self.subs, self.last_state = Telemetry(), {}, None
+            self.last_arrival, self.last_tel_log, self.last_tick = {}, 0.0, None
+            # telemetry and control in separate callback groups: a slow callback never delays the other
+            self.sensors, self.ctrl = MutuallyExclusiveCallbackGroup(), MutuallyExclusiveCallbackGroup()
             self.status_pub = self.create_publisher(String, "~/status", 10)
             if not a.shadow:
                 self.mode_pub = self.create_publisher(px4.OffboardControlMode, "/fmu/in/offboard_control_mode",
@@ -284,8 +317,8 @@ def main(argv=None):
                                                     qos_profile_sensor_data)
                 self.cmd_pub = self.create_publisher(px4.VehicleCommand, "/fmu/in/vehicle_command",
                                                      qos_profile_sensor_data)
-            self.create_timer(1.0, self.discover)
-            self.create_timer(.05, self.control)
+            self.create_timer(1.0, self.discover, callback_group=self.sensors)
+            self.create_timer(.05, self.control, callback_group=self.ctrl)
             self.get_logger().info(f"flyx_square up ({'SHADOW' if a.shadow else 'FLYING'}): climb {a.height} m, "
                                    f"square side {a.side} m; journal {out_dir}")
 
@@ -297,14 +330,24 @@ def main(argv=None):
                     if topic:
                         self.subs[key] = self.create_subscription(getattr(px4, typ), topic,
                                                                   lambda m, k=key: self.on_px4(k, m),
-                                                                  qos_profile_sensor_data)
+                                                                  qos_profile_sensor_data,
+                                                                  callback_group=self.sensors)
                         self.get_logger().info(f"{key}: {topic}")
                         log({"kind": "topic", "key": key, "topic": topic})
 
         def on_px4(self, key, m):
             t, tel = time.monotonic(), self.tel       # arrival on a monotonic clock (sim/WSL clocks jump)
+            sim = self.get_clock().now().nanoseconds * 1e-9 if not a.wall_clock else None
+            prev = self.last_arrival.get(key)
+            # record stream pauses beyond each topic's normal spacing (status/land_detected are ~1-2 Hz)
+            if prev is not None and t - prev[0] > {"odom": .15, "local": .3}.get(key, 2.0):
+                log({"kind": "gap", "key": key, "wall_s": round(t - prev[0], 3),
+                     "sim_s": None if sim is None or prev[1] is None else round(sim - prev[1], 3),
+                     "state": mission.state})
+            self.last_arrival[key] = (t, sim)
             if key == "odom":
                 tel.odom_t, tel.position, tel.q, tel.pose_frame = t, tuple(m.position), tuple(m.q), m.pose_frame
+                tel.odom_sim = sim
             elif key == "status":
                 tel.status_t, tel.arming_state, tel.nav_state = t, m.arming_state, m.nav_state
             elif key == "land":
@@ -323,8 +366,22 @@ def main(argv=None):
             self.cmd_pub.publish(cmd)
 
         def control(self):
-            self.tel.now = time.monotonic()
+            mono = time.monotonic()
+            sim = None if a.wall_clock else self.get_clock().now().nanoseconds * 1e-9
+            if self.last_tick is not None and mono - self.last_tick > .15:   # control loop runs at 20 Hz
+                log({"kind": "control_gap", "wall_s": round(mono - self.last_tick, 3), "state": mission.state})
+            self.last_tick = mono
+            self.tel.now, self.tel.sim_now = mono, sim
             state, sp, cmd, note = mission.tick(self.tel)
+            if mono - self.last_tel_log >= .5:                                # 2 Hz telemetry record
+                self.last_tel_log = mono
+                tel = self.tel
+                age = lambda t: None if t is None else round(mono - t, 3)
+                log({"kind": "tel", "sim_t": sim, "state": state, "pos": [round(v, 3) for v in tel.position],
+                     "odom_age": age(tel.odom_t), "local_age": age(tel.local_t), "status_age": age(tel.status_t),
+                     "odom_sim_age": None if sim is None or tel.odom_sim is None else round(sim - tel.odom_sim, 3),
+                     "xy_valid": tel.xy_valid, "z_valid": tel.z_valid, "nav": tel.nav_state,
+                     "arming": tel.arming_state, "landed": tel.landed})
             if state != self.last_state:
                 self.get_logger().info(f"{self.last_state} -> {state}: {mission.events[-1]['note'] if mission.events and 'note' in mission.events[-1] else note}")
                 log({"kind": "state", "sim_t": self.get_clock().now().nanoseconds * 1e-9, "state": state,
@@ -360,7 +417,7 @@ def main(argv=None):
     signal.signal(signal.SIGINT, interrupt)
     signal.signal(signal.SIGTERM, interrupt)
     node = SquareNode()
-    executor = MultiThreadedExecutor(num_threads=2)
+    executor = MultiThreadedExecutor(num_threads=3)
     executor.add_node(node)
     spinner = threading.Thread(target=executor.spin, daemon=True)
     spinner.start()
