@@ -104,7 +104,7 @@ def planner_process(conn, planner_name, altitude, camera_offset, pitch_down_deg,
     mount = CameraMount(offset=tuple(camera_offset), pitch_down_deg=pitch_down_deg)
     votes = np.zeros(prior.shape, np.int8)
     quality = {"hits": 0, "hits_on_published_walls": 0, "hits_new_confirmed": 0, "hits_new_ignored": 0}
-    conn.send("ready")
+    conn.send(("ready", [float(v) for v in planner.checkpoints[-1].centre]))
     while True:
         msg = conn.recv()
         if msg is None:
@@ -150,7 +150,8 @@ class PlannerProcess:
                                 args=(child, a.planner, a.altitude, a.camera_offset, a.camera_pitch_down_deg,
                                       a.carrot))
         self.proc.start()
-        if self.conn.recv() != "ready":
+        ready, self.pad_xy = self.conn.recv()
+        if ready != "ready":
             raise RuntimeError("planner process did not start")
         self.events, self.cleared, self.ms, self.depth_quality = [], [], 0.0, {}
         self.frame, self.lock = None, threading.Lock()      # latest depth frame, from the depth callback
@@ -182,6 +183,31 @@ class PlannerProcess:
             self.proc.terminate()
 
 
+def print_summary(mission, planner, node, journal_path):
+    """What happened, on the terminal: result, why, checkpoints, PX4 failsafes, stalls, depth."""
+    last = mission.events[-1] if mission.events else {}
+    lines = ["", "=" * 72, f"RESULT: {mission.state}" + (f" - {last.get('note')}" if last.get("note") else "")]
+    lines.append("checkpoints cleared: " + (", ".join(c["name"] for c in planner.cleared) or "none")
+                 + f"  ({len(planner.cleared)}/5)")
+    lines.append("states: " + " -> ".join(e["to"] for e in mission.events))
+    if node.px4_modes:
+        lines.append("PX4 mode changes (nav_state / failsafe / flags):")
+        lines += [f"  {m}" for m in node.px4_modes[-4:]]
+    if node.stalls:
+        lines.append(f"program stalls > 0.15 s: {len(node.stalls)}, worst {max(node.stalls):.2f} s")
+    q = planner.depth_quality or {}
+    if q.get("hits"):
+        lines.append(f"depth: {node.depth_stats['frames']} frames; {q['hits_on_published_walls'] / q['hits']:.0%} of "
+                     f"hits on published walls (low = wrong camera mount); new obstacles {q['hits_new_confirmed']}")
+    elif node.depth_stats["frames"] == 0:
+        lines.append("depth: no frames used (check --depth-topic / camera_info)")
+    if planner.events:
+        lines.append("planner events (last 5):")
+        lines += [f"  {e}" for e in planner.events[-5:]]
+    lines += [f"journal: {journal_path}", "=" * 72]
+    print("\n".join(lines), flush=True)
+
+
 def main(argv=None):
     a = parse_args(argv)
     planner = PlannerProcess(a)          # first: it forks
@@ -198,7 +224,7 @@ def main(argv=None):
 
     mission = Mission(planner, MissionConfig(
         execute=a.execute, altitude=a.altitude, carrot_m=a.carrot, launch_xy=tuple(a.launch_xy),
-        launch_heading=a.launch_heading, launch_body_agl=a.launch_body_agl))
+        launch_heading=a.launch_heading, launch_body_agl=a.launch_body_agl, pad_xy=tuple(planner.pad_xy)))
     a.output.mkdir(parents=True, exist_ok=False)
     journal = open(a.output / "journal.jsonl", "w", encoding="utf-8")
 
@@ -220,6 +246,7 @@ def main(argv=None):
             self.poses_lock = threading.Lock()  # odometry thread appends, depth thread reads
             self.depth_stats = {"frames": 0, "matched": 0, "fallback": 0, "turning": 0, "max_odom_delay_s": 0.0}
             self.failsafe_flags = None
+            self.px4_modes, self.stalls = [], []
             self.offsets = deque(maxlen=200)    # arrival (ROS clock) - PX4 sample time, last ~2 s
             self.intr = None
             self.subs = {}
@@ -264,6 +291,7 @@ def main(argv=None):
 
         # ---------------------------------------------------------- inputs
         def discover(self):
+            self.check_foreign()
             graph = self.get_topic_names_and_types()
             for key, (base, typ) in OUT_TOPICS.items():
                 if key in self.subs:
@@ -276,6 +304,19 @@ def main(argv=None):
                     self.get_logger().info(f"{key}: {topic}")
                     log({"kind": "topic", "key": key, "topic": topic})
 
+        def check_foreign(self):
+            """Another program sending PX4 setpoints (a teammate's script still running, a flight
+            interface): never arm with one; if one appears in flight, the guard lands."""
+            own = 1 if a.execute else 0
+            found = [f"{t} x{n}" for t in ("/fmu/in/trajectory_setpoint", "/fmu/in/offboard_control_mode")
+                     for n in [self.count_publishers(t) - own] if n > 0]
+            foreign = "; ".join(found)
+            if foreign != self.tel.foreign:
+                (self.get_logger().error if foreign else self.get_logger().info)(
+                    "other PX4 setpoint publishers: " + foreign if foreign else "no other PX4 setpoint publisher")
+                log({"kind": "foreign_publishers", "t": self.now(), "note": foreign})
+            self.tel.foreign = foreign
+
         def on_px4(self, key, msg):
             t, tel = time.monotonic(), self.tel        # arrival time, monotonic (see Telemetry)
             if key == "odom":
@@ -286,6 +327,8 @@ def main(argv=None):
                 tel.pose_frame = msg.pose_frame
             elif key == "status":
                 if msg.nav_state != tel.nav_state or bool(msg.failsafe) != tel.failsafe:
+                    self.px4_modes.append(f"nav_state {int(msg.nav_state)} (asked {int(msg.nav_state_user_intention)})"
+                                          f" failsafe={bool(msg.failsafe)} {self.failsafe_flags or ''}")
                     log({"kind": "px4_mode", "t": self.now(), "nav_state": int(msg.nav_state),
                          "requested": int(msg.nav_state_user_intention), "failsafe": bool(msg.failsafe),
                          "user_took_over": bool(msg.failsafe_and_user_took_over),
@@ -372,6 +415,8 @@ def main(argv=None):
             mono, sim = time.monotonic(), self.now()
             if self.last_tick is not None:                     # control timer is 20 Hz
                 gap_mono, gap_sim = mono - self.last_tick[0], sim - self.last_tick[1]
+                if gap_mono > .15:
+                    self.stalls.append(gap_mono)
                 if gap_mono > .15 or abs(gap_sim - gap_mono) > .15:
                     log({"kind": "timing", "t": sim, "gap_s": round(gap_mono, 3), "clock_gap_s": round(gap_sim, 3)})
             self.last_tick = (mono, sim)
@@ -465,7 +510,7 @@ def main(argv=None):
         log({"kind": "end", "state": mission.state, "events": mission.events, "depth": node.depth_stats,
              "depth_quality": planner.depth_quality,
              "cleared": planner.cleared, "planner_events": planner.events})
-        print(f"finished in state {mission.state}; journal {a.output / 'journal.jsonl'}", flush=True)
+        print_summary(mission, planner, node, a.output / "journal.jsonl")
         executor.shutdown(timeout_sec=1.0)
         planner.close()
         node.destroy_node()

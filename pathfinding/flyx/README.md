@@ -103,6 +103,14 @@ Also: the commanded heading is rate-limited to **0.25 rad/s** (`yaw_rate_max`). 
 flyx_course data: 30 of 40 visual-odometry losses at yaw rates above 0.35 rad/s, 3/3 Gazebo
 completions at 0.25. Fake-PX4: 4/4 complete, ~45 s takeoff to landing.
 
+**Lab robustness (from Suraj's flyx_course journals):** in the air, odometry older than 0.3 s
+*holds* the last setpoint and only a 3 s outage lands (FlyX pauses odometry up to ~0.7 s);
+status / local position land after 10 s of silence (gaps of 2.4-3.3 s measured), a fresh
+"estimator invalid" still lands at once. Another program publishing `/fmu/in` setpoints blocks
+arming and lands in flight. At the pad it centres to 8 cm before Land (was up to 0.4 m off;
+fake-PX4 now 0.04-0.07 m). Every run ends with a terminal summary: result and reason,
+checkpoints, PX4 mode changes + failsafe flags, stalls, depth hit quality, planner events.
+
 Tested: `tests/test_flyx_mission.py`; full ROS wiring in Jazzy against `fake_px4.py`
 (status at the lab's slow rates): course completed, 3 commands (Offboard, arm, land);
 shadow + Ctrl-C sends nothing; `--execute` + SIGTERM mid-flight sends Land.

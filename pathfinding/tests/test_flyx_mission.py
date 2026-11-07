@@ -107,11 +107,18 @@ def airborne_mission(**cfg):
 AIR = dict(nav_state=NAV_STATE_OFFBOARD, arming_state=ARMING_STATE_ARMED, landed=False, position_ned=(0.0, 0.0, -.85))
 
 
-def test_stale_pose_in_flight_lands():
+def test_odometry_pause_holds_and_only_an_outage_lands():
+    """FlyX pauses odometry up to ~0.7 s (Suraj's journals) and run 4 landed on a 0.42 s gap.
+    A pause holds the last setpoint; only a 3 s outage lands."""
     m, t = airborne_mission()
-    out = m.tick(tel(t + 1.0, **{**AIR, "odom_t": t}))                  # pose 1 s old
-    assert m.state == "LAND" and out.command.command == CMD_NAV_LAND
-    assert m.tick(tel(t + 1.1, **AIR)).command is None                   # land sent once
+    m.plan()
+    flying = m.tick(tel(t + .05, **AIR)).setpoint
+    held = m.tick(tel(t + 1.0, **{**AIR, "odom_t": t + .05}))           # pose ~1 s old
+    assert m.state == "NAVIGATE" and held.note.startswith("odometry paused")
+    assert np.allclose(held.setpoint[0], flying[0]) and held.command is None
+    out = m.tick(tel(t + 4.0, **{**AIR, "odom_t": t + .05}))            # 4 s: outage
+    assert m.state == "LAND" and out.command.command == CMD_NAV_LAND and "odometry stale" in m.events[-1]["note"]
+    assert m.tick(tel(t + 4.1, **AIR)).command is None                   # not re-sent within resend_s
 
 
 def test_pose_stamped_just_after_the_control_tick_is_fresh():
@@ -138,7 +145,9 @@ def test_slow_vehicle_status_does_not_land():
 
 def test_land_note_names_the_failed_check():
     m, t = airborne_mission()
-    m.tick(tel(t + 5.0, **{**AIR, "status_t": t}))                      # status silent for 5 s
+    m.tick(tel(t + 5.0, **{**AIR, "status_t": t}))                      # 5 s silence: in the air, keep flying
+    assert m.state == "NAVIGATE"
+    m.tick(tel(t + 12.0, **{**AIR, "status_t": t}))                     # 12 s: too long
     assert m.state == "LAND" and "vehicle_status stale" in m.events[-1]["note"]
 
 
@@ -161,7 +170,9 @@ def test_local_position_gap_with_fresh_odometry_does_not_land():
     m, t = airborne_mission()
     m.tick(tel(t + 1.0, **{**AIR, "local_t": t}))                       # 1 s gap: keep flying
     assert m.state == "NAVIGATE", m.events
-    m.tick(tel(t + 3.0, **{**AIR, "local_t": t}))                       # 3 s: estimator flags too old
+    m.tick(tel(t + 3.0, **{**AIR, "local_t": t}))                       # 3 s: lab gaps reach 3.3 s
+    assert m.state == "NAVIGATE", m.events
+    m.tick(tel(t + 12.0, **{**AIR, "local_t": t}))                      # 12 s: estimator flags too old
     assert m.state == "LAND" and "local_position stale" in m.events[-1]["note"]
 
 
@@ -320,3 +331,24 @@ def test_heading_rate_is_capped():
         yaws.append(m.tick(tel(t + .05 * i, **AIR)).setpoint[1])
     steps = np.abs(np.diff(yaws))
     assert steps.max() <= .25 * .05 + 1e-9 and abs(yaws[-1] - yaws[0]) > .4      # capped, still turning
+
+
+def test_another_setpoint_publisher_blocks_arming_and_lands_in_flight():
+    m = Mission(FakePlanner(), MissionConfig(execute=True))
+    for i in range(100):
+        m.tick(tel(.05 * i, foreign="/fmu/in/trajectory_setpoint x1"))
+    assert m.state == "WAIT_HEALTH"                                      # never streams or arms
+    m, t = airborne_mission()
+    m.tick(tel(t + .05, **{**AIR, "foreign": "/fmu/in/trajectory_setpoint x1"}))
+    assert m.state == "LAND" and "another program" in m.events[-1]["note"]
+
+
+def test_centres_over_the_pad_before_landing():
+    m, t = airborne_mission(pad_xy=(-2.515, 1.2))                       # 0.29 m north of the launch mark
+    m.planner_status = "done"
+    out = m.tick(tel(t + .05, **AIR))
+    assert m.state == "NAVIGATE" and out.note.startswith("centring over the pad") and out.command is None
+    pad_ned = m.frame.to_ned(np.array([-2.515, 1.2, .9]))
+    assert np.allclose(out.setpoint[0], pad_ned)
+    out = m.tick(tel(t + .1, **{**AIR, "position_ned": tuple(pad_ned)}))  # arrived
+    assert m.state == "LAND" and out.command.command == CMD_NAV_LAND and "from its centre" in m.events[-1]["note"]

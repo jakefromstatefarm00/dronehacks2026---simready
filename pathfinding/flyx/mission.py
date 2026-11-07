@@ -47,6 +47,7 @@ class Telemetry:
     z_valid: bool = False
     failsafe: bool = False                 # vehicle_status: PX4 failsafe active
     user_intention: int = 0                # vehicle_status.nav_state_user_intention
+    foreign: str = ""                      # other programs publishing PX4 setpoints ('' = none)
 
 
 @dataclass
@@ -67,11 +68,20 @@ class MissionConfig:
     stream_before_offboard_s: float = 1.0
     ack_timeout_s: float = 3.0
     max_flight_s: float = 175.0            # rule 7.9: 3-minute run limit, with margin
+    # Freshness. On the ground (before Offboard/arm) everything must be fresh. In the air the lab's
+    # topics pause (Suraj's FlyX journals: odometry 0.7 s, local position / land-detected 2.4-3.3 s,
+    # program stalls up to 1.8 s) and landing on every pause ended runs 3 and 4. So in the air:
+    # odometry older than pose_max_age_s HOLDS the last setpoint (PX4 keeps flying on its own
+    # estimate); only odometry_outage_s lands. Slow topics land after slow_lost_s of silence; a
+    # fresh "estimator invalid" still lands at once.
     pose_max_age_s: float = .3
-    status_max_age_s: float = 3.0          # vehicle_status ~1.7 Hz and land_detected ~0.9 Hz in FlyX
-    # vehicle_local_position: only its xy/z validity flags are used (the pose comes from odometry,
-    # held to pose_max_age_s). FlyX run 3 landed in TAKEOFF on a 0.69 s gap while odometry was fresh.
-    local_max_age_s: float = 2.0
+    odometry_outage_s: float = 3.0
+    status_max_age_s: float = 3.0          # on the ground; vehicle_status ~1.7 Hz in FlyX
+    local_max_age_s: float = 2.0           # on the ground; only its xy/z validity flags are used
+    slow_lost_s: float = 10.0              # in the air: status / local position silence that lands
+    pad_centre_m: float = .08              # at the pad: centre over it to within this before Land
+    pad_centre_timeout_s: float = 8.0
+    pad_xy: tuple | None = None            # pad centre, course frame (from the planner)
     offboard_loss_s: float = .5
     launch_xy: tuple = (-2.515, .914)      # launch mark, course frame
     launch_heading: float = float(np.pi / 2)   # vehicle heading on the mark, course frame (facing +y)
@@ -103,6 +113,8 @@ class Mission:
         self._last_command_t = None
         self._turn_xy = None
         self._sp_yaw = None                # last commanded NED yaw (rate limiter state)
+        self._last_sp = None               # last NAVIGATE setpoint (held while odometry pauses)
+        self._pad_since = None
         self._sp_yaw_t = None
         self._offboard_lost_since = None
         self.pose_course = None            # (xyz, yaw, rotation) for depth projection
@@ -117,17 +129,19 @@ class Mission:
         # threads can stamp arrivals between the control loop reading the clock and this check.
         return t is not None and now - t <= max_age
 
-    def _unhealthy_reason(self, tel):
+    def _unhealthy_reason(self, tel, airborne=False):
         """'' when healthy, else which check failed (logged with the LAND transition)."""
         c, now = self.cfg, tel.now
         age = lambda t: "never" if t is None else f"{now - t:.2f}s old"
-        if not self._fresh(tel.odom_t, now, c.pose_max_age_s):
+        if not self._fresh(tel.odom_t, now, c.odometry_outage_s if airborne else c.pose_max_age_s):
             return f"odometry stale ({age(tel.odom_t)})"
+        if tel.foreign:
+            return "another program sends PX4 setpoints: " + tel.foreign
         if tel.pose_frame != POSE_FRAME_NED:
             return f"odometry frame {tel.pose_frame} is not NED"
-        if not self._fresh(tel.status_t, now, c.status_max_age_s):
+        if not self._fresh(tel.status_t, now, c.slow_lost_s if airborne else c.status_max_age_s):
             return f"vehicle_status stale ({age(tel.status_t)})"
-        if not self._fresh(tel.local_t, now, c.local_max_age_s):
+        if not self._fresh(tel.local_t, now, c.slow_lost_s if airborne else c.local_max_age_s):
             return f"local_position stale ({age(tel.local_t)})"
         if not (tel.xy_valid and tel.z_valid):
             return f"estimator invalid (xy_valid={tel.xy_valid}, z_valid={tel.z_valid})"
@@ -256,15 +270,18 @@ class Mission:
                 elif now - self._t_state > c.takeoff_timeout_s and off < c.takeoff_loose_m:
                     self._go("NAVIGATE", now, f"near altitude after {c.takeoff_timeout_s:.0f} s ({off:.2f} m off)")
                 return Output(self.state, sp, note="takeoff")
+            if not self._fresh(tel.odom_t, now, c.pose_max_age_s) and self._last_sp is not None:
+                return Output(self.state, self._last_sp, note="odometry paused: holding")
             if self.planner_status == "done":
-                return self._land(now, "landing pad reached")
+                return self._centre_and_land(tel)
             if self.planner_status == "failed":
                 return self._land(now, "planner failed: " + (self.planner.events[-1]["event"] if self.planner.events else ""))
             if self.target is None:
-                return Output(self.state, self._limit_yaw(self._course_setpoint(self.pose_course[0][:2],
-                                                                                self.pose_course[1]), tel))
-            return Output(self.state, self._limit_yaw(self._course_setpoint(*self.target), tel),
-                          note=f"planner {self.planner_status}")
+                sp = self._limit_yaw(self._course_setpoint(self.pose_course[0][:2], self.pose_course[1]), tel)
+            else:
+                sp = self._limit_yaw(self._course_setpoint(*self.target), tel)
+            self._last_sp = sp
+            return Output(self.state, sp, note=f"planner {self.planner_status}")
 
         if self.state == "LAND":
             if tel.landed and tel.arming_state == ARMING_STATE_DISARMED:
@@ -275,6 +292,20 @@ class Mission:
             return Output(self.state)
 
         return Output(self.state)
+
+    def _centre_and_land(self, tel):
+        """Pad reached (centre within the planner's pad radius): fly to the pad centre, then Land.
+        Landing where "reached" fired put the drone 0.25 m off centre (Suraj's Gazebo v139)."""
+        c, now = self.cfg, tel.now
+        if c.pad_xy is None:
+            return self._land(now, "landing pad reached")
+        self._pad_since = self._pad_since if self._pad_since is not None else now
+        off = float(np.hypot(*(np.asarray(self.pose_course[0][:2]) - np.asarray(c.pad_xy))))
+        if off <= c.pad_centre_m or now - self._pad_since > c.pad_centre_timeout_s:
+            return self._land(now, f"landing pad reached ({off:.2f} m from its centre)")
+        sp = self._limit_yaw(self._course_setpoint(c.pad_xy, self.pose_course[1]), tel)
+        self._last_sp = sp
+        return Output(self.state, sp, note=f"centring over the pad ({off:.2f} m)")
 
     def _limit_yaw(self, setpoint, tel):
         """Rate-limit the commanded heading to yaw_rate_max (starts from the vehicle's yaw)."""
@@ -300,8 +331,9 @@ class Mission:
                 return Output(self.state)
         else:
             self._offboard_lost_since = None
-        if not healthy:
-            return self._land(now, "unhealthy: " + self._unhealthy_reason(tel))
+        problem = self._unhealthy_reason(tel, airborne=True)
+        if problem:
+            return self._land(now, "unhealthy: " + problem)
         if self._sim_takeoff is not None and tel.sim_now is not None:
             flown = tel.sim_now - self._sim_takeoff               # the run limit is in sim time
         else:
