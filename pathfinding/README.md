@@ -13,7 +13,7 @@ Everything needed to run, test and change our pathfinding. Three things live her
 ```bash
 cd pathfinding
 python3 -m venv .venv && .venv/bin/pip install -r requirements.txt     # Windows: .venv\Scripts\pip
-.venv/bin/python -m pytest -q tests                                     # 128 tests, ~15 s
+.venv/bin/python -m pytest -q tests                                     # 129 tests, ~15 s
 .venv/bin/python -m pathplan.harness --variants 4 --output runs/bench   # offline benchmark, ~4 min
 bash gzsim/run.sh                                                        # Gazebo flight (Linux/WSL + Docker)
 ```
