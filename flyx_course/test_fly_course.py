@@ -268,3 +268,74 @@ def test_estimate_divergence_lands():
     land = [e for e in mission.events if e.get("to") == "LAND"]
     assert land and "diverged" in land[0]["note"]
     assert land[0]["t"] < 33, land[0]
+
+
+# ------------------------------------------------------------------ Sky Beta contract (default mode)
+ODOM0, ODOM_YAW0 = (0.02, -0.01, 0.0), 0.35      # cuVSLAM odom: start-up pose, arbitrary heading
+
+
+def fly_skybeta(seconds=260, odom=(), hook=None, pilot_delay=2.0):
+    """Fake pilot: arms + Offboard once the program streams; disarms (lands) when it reports HOLD."""
+    px4, mission = FakePX4(start=ODOM0, yaw=ODOM_YAW0), m.SkybetaMission(settle=2.0)
+    sp = None
+    t, t_arm, t_stream = 0.0, None, None
+    while t < seconds and mission.state not in ("DONE", "TAKEN_OVER"):
+        rel = None if t_arm is None else t - t_arm
+        px4.step(t, sp, None, stale_odom=_inside(rel, odom))
+        if mission.state == "STREAM" and t_stream is None:
+            t_stream = t
+        if t_stream is not None and t_arm is None and t - t_stream > pilot_delay:
+            px4.tel.arming_state, px4.tel.nav_state, t_arm = m.ARMED, m.NAV_OFFBOARD, t
+        if mission.state == "HOLD" and px4.tel.arming_state == m.ARMED:
+            px4.tel.arming_state, px4.tel.nav_state = m.DISARMED, 0      # the pilot lands
+        if hook:
+            hook(t, mission, px4)
+        _, sp, cmd, _ = mission.tick(px4.tel)
+        assert cmd is None, "the Sky Beta contract never commands PX4"
+        t += .05
+    return px4, mission
+
+
+def test_enu_frame_round_trip_and_launch_mark():
+    f = m.EnuFrame(ODOM0, ODOM_YAW0)
+    c = f.to_course(ODOM0)
+    assert abs(c[0] - m.LAUNCH_XY[0]) < 1e-9 and abs(c[1] - m.LAUNCH_XY[1]) < 1e-9 and abs(c[2]) < 1e-9
+    p = (1.2, -0.7, 0.9)
+    assert max(abs(a - b) for a, b in zip(f.to_ned(f.to_course(p)), p)) < 1e-9
+    fwd = (ODOM0[0] + cos(ODOM_YAW0), ODOM0[1] + sin(ODOM_YAW0), 0.0)      # 1 m along the start heading
+    d = [a - b for a, b in zip(f.to_course(fwd), c)]
+    assert abs(d[0]) < 1e-9 and abs(d[1] - 1) < 1e-9                       # = course +y (up the corridor)
+    assert abs(f.yaw_to_course(ODOM_YAW0) - m.LAUNCH_HEADING) < 1e-9
+    assert f.to_course((0, 0, 1.0))[2] > .99                                 # ENU up = course up
+
+
+def test_skybeta_full_course_holds_over_the_pad_for_the_pilot():
+    px4, mission = fly_skybeta()
+    assert mission.state == "DONE", mission.events[-3:]
+    hold = [e for e in mission.events if e.get("to") == "HOLD"][0]
+    assert "course complete" in hold["note"]
+    wps = [e["waypoint"] for e in mission.events if "waypoint" in e]
+    assert wps == list(range(1, len(mission.ctrl.waypoints) + 1))
+    end = mission.frame.to_course(px4.tel.position)
+    lx, ly = m.ROUTE["landing"]["position"][:2]
+    assert ((end[0] - lx) ** 2 + (end[1] - ly) ** 2) ** .5 < .15
+    assert max_off_route(px4, mission) < .13
+
+
+def test_skybeta_does_not_fly_before_the_pilot():
+    px4, mission = fly_skybeta(seconds=30, pilot_delay=1e9)
+    assert mission.state == "STREAM" and all(p == ODOM0 for p in px4.trace)
+
+
+def test_skybeta_odometry_outage_holds_for_the_pilot():
+    _, mission = fly_skybeta(odom=[(20.0, 300.0)])
+    hold = [e for e in mission.events if e.get("to") == "HOLD"]
+    assert hold and "odometry lost" in hold[0]["note"]
+
+
+def test_skybeta_pilot_takeover_stops_commanding():
+    def hook(t, mission, px4):
+        if mission.state == "FLY" and t > 25:
+            px4.tel.nav_state = 2
+    _, mission = fly_skybeta(hook=hook)
+    assert mission.state == "TAKEN_OVER"

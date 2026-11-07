@@ -54,6 +54,7 @@ ODOM_HOLD_S = 0.4    # odometry this old: hold (freeze the route) until it retur
 OUTAGE_S = 3.0       # odometry missing this long in the air: land
 SLOW_LOST_S = 10.0   # status / local position silent this long in the air: land
 SETTLE_S = 10.0      # healthy + landed this long before Offboard/arm
+GROUND_ODOM_S = 1.0  # on the ground odometry may be this old (laptop Isaac: ~6 Hz with jitter)
 
 import argparse
 import json
@@ -190,7 +191,7 @@ class CourseMission:
         now = tel.now
         if tel.odom_t is None:
             return "odometry never received"
-        if now - tel.odom_t > (ODOM_HOLD_S if ground else OUTAGE_S):
+        if now - tel.odom_t > (GROUND_ODOM_S if ground else OUTAGE_S):
             return f"odometry lost ({now - tel.odom_t:.2f} s)"
         if tel.foreign:
             return "another program commands PX4: " + tel.foreign
@@ -253,12 +254,11 @@ class CourseMission:
         bad = self.unhealthy(tel, ground=self.state == "WAIT_HEALTH")
         s = self.state
         if s == "WAIT_HEALTH":
-            pause = self.paused(tel)
-            ok = not bad and not pause and tel.landed and tel.landed_t is not None \
+            ok = not bad and tel.landed and tel.landed_t is not None \
                 and now - tel.landed_t <= 3.0 and tel.arming_state == DISARMED
             if not ok:
                 self.healthy_since = None
-                return s, None, None, "waiting: " + (bad or pause or "landed + disarmed")
+                return s, None, None, "waiting: " + (bad or "landed + disarmed")
             self.healthy_since = self.healthy_since if self.healthy_since is not None else now
             if now - self.healthy_since < self.settle:
                 return s, None, None, "healthy, confirming"
@@ -407,6 +407,98 @@ def corner_waypoints(start, waypoints, limit_deg=CORNER_DEG):
     return out
 
 
+class EnuFrame:
+    """cuVSLAM ``odom`` (ENU, origin and axes = the rig's start-up pose) <-> course frame.
+
+    Same interface as CourseFrame, so the flight core is shared; the "ned" method names mean
+    "the output frame" here (ENU odom). Built at launch: the vehicle sits on the launch mark facing
+    LAUNCH_HEADING; its odom pose then fixes the mapping. Course z = height above the launch pose."""
+
+    def __init__(self, p0, yaw0, launch_xy=LAUNCH_XY, launch_heading=LAUNCH_HEADING):
+        self.rot = wrap(launch_heading - yaw0)            # odom -> course rotation about z
+        self.c, self.s = cos(self.rot), sin(self.rot)
+        self.p0, self.l = tuple(p0), (launch_xy[0], launch_xy[1], 0.0)
+
+    def _r(self, v, sign=1):
+        c, s = self.c, sign * self.s
+        return (c * v[0] - s * v[1], s * v[0] + c * v[1], v[2])
+
+    def to_course(self, p):
+        r = self._r(tuple(a - b for a, b in zip(p, self.p0)))
+        return tuple(a + b for a, b in zip(r, self.l))
+
+    def to_ned(self, pc):                                  # course -> odom (ENU)
+        r = self._r(tuple(a - b for a, b in zip(pc, self.l)), -1)
+        return tuple(a + b for a, b in zip(r, self.p0))
+
+    def vel_to_ned(self, v):
+        return self._r(v, -1)
+
+    def yaw_to_course(self, yaw_enu):
+        return wrap(yaw_enu + self.rot)
+
+    def yaw_to_ned(self, yaw_course):
+        return wrap(yaw_course - self.rot)
+
+
+class SkybetaMission(CourseMission):
+    """The same flight core on the Sky Beta contract (organizer's skybeta_flight_interface):
+    odometry = /visual_slam/tracking/odometry (ENU odom), state = /skybeta/state, output =
+    /skybeta/setpoint/pose. It never arms, switches mode or lands: the safety pilot (or, in sim,
+    flyx_skybeta/sim_pilot.py) arms and the interface enters Offboard; at the end, or on any fault,
+    it holds and reports HOLD so the pilot lands (competitor_guide.md section 4)."""
+
+    def tick(self, tel):
+        now = tel.now
+        s = self.state
+        if s == "WAIT_HEALTH":
+            bad = self.unhealthy(tel, ground=True)
+            ok = not bad and tel.arming_state == DISARMED
+            if not ok:
+                self.healthy_since = None
+                return s, None, None, "waiting: " + (bad or "disarmed first (the interface needs it)")
+            self.healthy_since = self.healthy_since if self.healthy_since is not None else now
+            if now - self.healthy_since < self.settle:
+                return s, None, None, "healthy, confirming"
+            self.frame = EnuFrame(tuple(tel.position), yaw_from_q_ned(tel.q))
+            p_c = self.frame.to_course(tel.position)
+            self.go("STREAM", now, f"course frame from launch pose: odom {tuple(round(v, 3) for v in tel.position)} "
+                                   f"-> course {tuple(round(v, 3) for v in p_c)}; route {self.route.get('name')}")
+        if self.state == "STREAM":
+            # hold setpoints: the interface only enters Offboard while team code is streaming
+            if tel.nav_state == NAV_OFFBOARD and tel.arming_state == ARMED:
+                self.t_takeoff = now
+                self.ctrl = core.CourseController(self.route, speed_scale=self.speed_scale)
+                self.corners = corner_waypoints(self.route["start"], self.ctrl.waypoints, self.corner_deg)
+                self.v_pos = self.frame.to_course(tel.position)
+                self.v_vel = (0.0, 0.0, 0.0)
+                self.v_yaw = self.frame.yaw_to_course(yaw_from_q_ned(tel.q))
+                self.v_yaw_rate = 0.0
+                self.last_now, self.ref_clock = now, 0.0
+                self.go("FLY", now, "Offboard active (pilot armed)")
+            else:
+                return self.state, self.hold_here(tel), None, "streaming hold setpoints; waiting for the pilot"
+        if self.state == "FLY":
+            return self.fly(tel, now, self.unhealthy(tel))
+        if self.state == "HOLD":
+            if tel.arming_state == DISARMED:
+                self.go("DONE", now, "disarmed by the pilot")
+                return self.state, None, None, ""
+            return self.state, self.hold_sp, None, "holding: " + self.hold_why
+        return self.state, None, None, ""
+
+    def land(self, now, why):
+        """The pilot lands: hold where it is safe and say so on the status topic."""
+        if why.startswith("course complete") and self.ctrl is not None:
+            target = self.ctrl.handoff_target
+        else:
+            target = self.v_pos
+        self.hold_why = why
+        self.hold_sp = (self.frame.to_ned(target), None, self.frame.yaw_to_ned(self.v_yaw), nan)
+        self.go("HOLD", now, why + " -- holding; the pilot lands")
+        return self.state, self.hold_sp, None, why
+
+
 def journal_dir():
     stamp = time.strftime("%Y%m%d-%H%M%S")
     for base in (Path(__file__).resolve().parent / "runs", Path.home() / "flyx-runs", Path("/tmp/flyx-runs")):
@@ -428,9 +520,16 @@ def main(argv=None):
     ap.add_argument("--corner-deg", type=float, default=CORNER_DEG,
                     help="brake into turns sharper than this (180: never)")
     ap.add_argument("--wall-clock", action="store_true", help="tests without a simulator /clock")
+    ap.add_argument("--native", action="store_true",
+                    help="FlyX-lab only: command PX4 directly on /fmu/in (no skybeta_flight_interface). "
+                         "Default: the Sky Beta contract, the same as on the drone")
+    ap.add_argument("--odometry-topic", default="/visual_slam/tracking/odometry")
     a, _unknown = ap.parse_known_args(argv)
+    if not a.native:
+        return main_skybeta(a)
     import rclpy
     from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
+    from rclpy.clock import Clock, ClockType
     from rclpy.executors import MultiThreadedExecutor
     from rclpy.node import Node
     from rclpy.parameter import Parameter
@@ -466,8 +565,12 @@ def main(argv=None):
                                                     qos_profile_sensor_data)
                 self.cmd_pub = self.create_publisher(px4.VehicleCommand, "/fmu/in/vehicle_command",
                                                      qos_profile_sensor_data)
-            self.create_timer(1.0, self.discover, callback_group=self.sensors)
-            self.create_timer(.05, self.control, callback_group=self.ctrl_group)
+            # timers on a steady clock: with use_sim_time and no /clock (the Isaac/Pegasus sim) ROS-time
+            # timers never fire; a stalling /clock would also stall the setpoint stream
+            steady = Clock(clock_type=ClockType.STEADY_TIME)
+            self.px4_ts = self.px4_ts_mono = None   # PX4 time base, from odometry timestamps
+            self.create_timer(1.0, self.discover, callback_group=self.sensors, clock=steady)
+            self.create_timer(.05, self.control, callback_group=self.ctrl_group, clock=steady)
             self.get_logger().info(f"flyx_course up ({'SHADOW' if a.shadow else 'FLYING'}): {ROUTE.get('name')}, "
                                    f"speed scale {a.speed_scale}; journal {out_dir}")
 
@@ -509,6 +612,8 @@ def main(argv=None):
             self.last_arrival[key] = (t, sim)
             if key == "odom":
                 tel.odom_t, tel.position, tel.q, tel.pose_frame = t, tuple(m.position), tuple(m.q), m.pose_frame
+                if m.timestamp:
+                    self.px4_ts, self.px4_ts_mono = int(m.timestamp), t
                 tel.velocity = tuple(m.velocity)
                 tel.odom_sim = sim
             elif key == "status":
@@ -519,6 +624,10 @@ def main(argv=None):
                 tel.local_t, tel.xy_valid, tel.z_valid = t, bool(m.xy_valid), bool(m.z_valid)
 
         def us(self):
+            """Timestamp in PX4's own time base (latest odometry stamp + elapsed), so messages are
+            fresh to PX4 whatever the ROS clock does; ROS time until odometry arrives."""
+            if self.px4_ts is not None:
+                return int(self.px4_ts + (time.monotonic() - self.px4_ts_mono) * 1e6)
             return int(self.get_clock().now().nanoseconds / 1000)
 
         def command(self, c):
@@ -597,6 +706,149 @@ def main(argv=None):
     except KeyboardInterrupt:
         node.land_if_airborne()
         time.sleep(.3)
+    finally:
+        log({"kind": "end", "state": mission.state, "events": mission.events})
+        print(f"flyx_course finished in state {mission.state}; journal {out_dir}", flush=True)
+        executor.shutdown(timeout_sec=2.0)
+        spinner.join(timeout=2.0)
+        try:
+            node.destroy_node()
+        except Exception:
+            pass
+        with jlock:
+            if journal:
+                journal.close()
+        rclpy.try_shutdown()
+    return 0 if mission.state == "DONE" else 1
+
+
+def main_skybeta(a):
+    """Sky Beta contract node: the organizer's skybeta_flight_interface owns /fmu/in."""
+    import rclpy
+    from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
+    from rclpy.clock import Clock, ClockType
+    from rclpy.executors import MultiThreadedExecutor
+    from rclpy.node import Node
+    from rclpy.parameter import Parameter
+    from rclpy.qos import qos_profile_sensor_data
+    from rclpy.signals import SignalHandlerOptions
+    from geometry_msgs.msg import PoseStamped
+    from nav_msgs.msg import Odometry
+    from std_msgs.msg import String
+
+    mission = SkybetaMission(speed_scale=a.speed_scale, settle=a.settle_s, corner_deg=a.corner_deg,
+                             yaw_rate_max=a.yaw_rate)
+    out_dir = journal_dir()
+    journal = open(out_dir / "journal.jsonl", "w", encoding="utf-8") if out_dir else None
+    jlock = threading.Lock()
+
+    def log(rec):
+        with jlock:
+            if journal and not journal.closed:
+                journal.write(json.dumps(rec, default=float) + "\n")
+                journal.flush()
+
+    def rotate(q, v):          # body -> world for a unit quaternion (w, x, y, z)
+        w, x, y, z = q
+        return (v[0] * (1 - 2 * (y * y + z * z)) + v[1] * 2 * (x * y - w * z) + v[2] * 2 * (x * z + w * y),
+                v[0] * 2 * (x * y + w * z) + v[1] * (1 - 2 * (x * x + z * z)) + v[2] * 2 * (y * z - w * x),
+                v[0] * 2 * (x * z - w * y) + v[1] * 2 * (y * z + w * x) + v[2] * (1 - 2 * (x * x + y * y)))
+
+    class SkybetaCourseNode(Node):
+        def __init__(self):
+            super().__init__("flyx_course")
+            self.set_parameters([Parameter("use_sim_time", value=not a.wall_clock)])
+            self.tel, self.last_state, self.last_tel_log, self.last_tick = Telemetry(), None, 0.0, None
+            self.last_odom = None
+            self.tel.pose_frame = POSE_FRAME_NED   # health check: frames are handled by EnuFrame
+            self.tel.landed, self.tel.landed_t = True, 0.0
+            sensors, ctrl = MutuallyExclusiveCallbackGroup(), MutuallyExclusiveCallbackGroup()
+            self.status_pub = self.create_publisher(String, "~/status", 10)
+            self.sp_pub = None if a.shadow else self.create_publisher(PoseStamped, "/skybeta/setpoint/pose", 10)
+            self.create_subscription(Odometry, a.odometry_topic, self.on_odom, qos_profile_sensor_data,
+                                     callback_group=sensors)
+            self.create_subscription(String, "/skybeta/state", self.on_state, 10, callback_group=sensors)
+            steady = Clock(clock_type=ClockType.STEADY_TIME)
+            self.create_timer(.05, self.control, callback_group=ctrl, clock=steady)
+            self.get_logger().info(f"flyx_course up (Sky Beta contract, {'SHADOW' if a.shadow else 'FLYING'}): "
+                                   f"{ROUTE.get('name')}, speed scale {a.speed_scale}; odometry {a.odometry_topic}; "
+                                   f"journal {out_dir}. The pilot arms; the interface enters Offboard.")
+
+        def on_odom(self, m):
+            t, tel = time.monotonic(), self.tel
+            if self.last_odom is not None and t - self.last_odom > .15:
+                log({"kind": "gap", "key": "odom", "wall_s": round(t - self.last_odom, 3), "state": mission.state})
+            self.last_odom = t
+            p, o = m.pose.pose.position, m.pose.pose.orientation
+            tel.odom_t, tel.position, tel.q = t, (p.x, p.y, p.z), (o.w, o.x, o.y, o.z)
+            v = m.twist.twist.linear
+            tel.velocity = rotate(tel.q, (v.x, v.y, v.z))      # body FLU twist -> ENU
+
+        def on_state(self, m):
+            try:
+                st = json.loads(m.data)
+            except ValueError:
+                return
+            tel = self.tel
+            tel.status_t = tel.local_t = time.monotonic()
+            tel.arming_state = ARMED if st.get("armed") else DISARMED
+            tel.nav_state = NAV_OFFBOARD if st.get("offboard_active") else 0   # the interface's own flag
+            ok = bool(st.get("px4_link")) and st.get("local_enu") is not None
+            tel.xy_valid = tel.z_valid = ok
+            self.last_skybeta = st
+
+        def control(self):
+            mono = time.monotonic()
+            if self.last_tick is not None and mono - self.last_tick > .15:
+                log({"kind": "control_gap", "wall_s": round(mono - self.last_tick, 3), "state": mission.state})
+            self.last_tick = mono
+            self.tel.now = mono
+            state, sp, _cmd, note = mission.tick(self.tel)     # never a PX4 command on this contract
+            if mono - self.last_tel_log >= .5:
+                self.last_tel_log = mono
+                tel = self.tel
+                age = lambda t: None if t is None else round(mono - t, 3)
+                rec = {"kind": "tel", "state": state, "note": note, "pos": [round(v, 3) for v in tel.position],
+                       "odom_age": age(tel.odom_t), "state_age": age(tel.status_t), "valid": tel.xy_valid,
+                       "offboard": tel.nav_state == NAV_OFFBOARD, "armed": tel.arming_state == ARMED}
+                if mission.frame is not None:
+                    rec["course"] = [round(v, 3) for v in mission.frame.to_course(tel.position)]
+                    if mission.v_pos is not None:
+                        rec["setpoint_course"] = [round(v, 3) for v in mission.v_pos]
+                log(rec)
+            if state != self.last_state:
+                self.get_logger().info(f"{self.last_state} -> {state}: "
+                                       f"{mission.events[-1].get('note', note) if mission.events else note}")
+                log({"kind": "state", "state": state, "note": note,
+                     "event": mission.events[-1] if mission.events else None})
+                self.last_state = state
+            self.status_pub.publish(String(data=json.dumps({"state": state, "note": note})))
+            if sp is None or self.sp_pub is None:
+                return
+            pos, _vel, yaw, _ = sp
+            msg = PoseStamped()
+            msg.header.stamp = self.get_clock().now().to_msg()
+            msg.header.frame_id = "odom"
+            msg.pose.position.x, msg.pose.position.y, msg.pose.position.z = (float(v) for v in pos)
+            msg.pose.orientation.w, msg.pose.orientation.z = cos(yaw / 2), sin(yaw / 2)
+            self.sp_pub.publish(msg)
+
+    rclpy.init(signal_handler_options=SignalHandlerOptions.NO)
+
+    def interrupt(signum, frame):
+        raise KeyboardInterrupt
+    signal.signal(signal.SIGINT, interrupt)
+    signal.signal(signal.SIGTERM, interrupt)
+    node = SkybetaCourseNode()
+    executor = MultiThreadedExecutor(num_threads=3)
+    executor.add_node(node)
+    spinner = threading.Thread(target=executor.spin, daemon=True)
+    spinner.start()
+    try:
+        while rclpy.ok() and spinner.is_alive() and mission.state not in ("DONE", "TAKEN_OVER"):
+            time.sleep(.1)
+    except KeyboardInterrupt:
+        pass          # pose setpoints persist: the interface holds the last one; the pilot lands
     finally:
         log({"kind": "end", "state": mission.state, "events": mission.events})
         print(f"flyx_course finished in state {mission.state}; journal {out_dir}", flush=True)

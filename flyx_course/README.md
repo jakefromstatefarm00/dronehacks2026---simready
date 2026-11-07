@@ -1,20 +1,19 @@
-# flyx_course: the full course in the FlyX lab
+# flyx_course: the full course with the friend's waypoint controller
 
-```
-python3 flyx_course/fly_course.py              # fly
-python3 flyx_course/fly_course.py --shadow     # everything except publishing to PX4
-```
+**Default: the Sky Beta contract, the same as on the drone.** Run it in FlyX through
+`flyx_skybeta/run.sh course`; see `flyx_skybeta/README.md`. It reads
+`/visual_slam/tracking/odometry` and `/skybeta/state`, publishes `/skybeta/setpoint/pose`, and
+never arms or lands: the pilot does that, or `flyx_skybeta/sim_pilot.py` in sim.
 
-Before running: **Reset world**, with the vehicle on the launch mark facing up the first
-corridor (course +y). Then get the team's approval; the script arms by itself.
+`--native` is the old FlyX-only mode. It commands PX4 directly on `/fmu/in`, and is kept only as
+a fallback until the Sky Beta mode has flown in FlyX. **Never use it on the drone.**
 
 This flies the waypoint controller from
 [machmoon/dronehacks-sim](https://github.com/machmoon/dronehacks-sim) (`mission/core.py`,
-`CourseController`, unchanged) on their default route (`mission/course.json`). The route has
-15 waypoints: corridor, maze, Gate A, tunnel, chicane, window, then the landing pad, at their
-validated speed scale of 0.65. It uses the same lab plumbing that made `flyx_square` complete
-in FlyX. `fly_course.py` is a single file that needs only `rclpy`, `px4_msgs` and `std_msgs`.
-It is **generated**: edit `fly_course_template.py`, then run
+`CourseController`, unchanged) on their default route (`mission/course.json`), at their
+validated speed scale of 0.65. The route has 15 waypoints: corridor, maze, Gate A, tunnel,
+chicane, window, then the landing pad. `fly_course.py` is **generated**: edit
+`fly_course_template.py`, then run
 `python3 flyx_course/build_fly_course.py <path to machmoon/dronehacks-sim>`.
 
 ## Which interface: FlyX lab only
