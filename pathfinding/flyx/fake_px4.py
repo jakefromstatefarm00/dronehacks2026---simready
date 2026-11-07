@@ -6,11 +6,17 @@
 Publishes /fmu/out/vehicle_odometry and vehicle_local_position_v1 at 50 Hz, and
 vehicle_status_v1 / vehicle_land_detected at the slow rates measured in FlyX (1.7 / 0.9 Hz,
 plus immediately on change, like PX4); obeys VehicleCommand (Offboard, arm, land) and moves
-a point toward the latest TrajectorySetpoint at <= 1 m/s (yaw follows the setpoint).
+a point toward the latest TrajectorySetpoint at <= 1 m/s and yaw at <= 1 rad/s.
 Writes the commands it received and the final state to a JSON file. Not a flight model.
+
+FAKE_DEPTH=1 also publishes /camera/depth/image_raw (16UC1 640x400, 13 Hz, the FlyX lab's
+OAK-D intrinsics) + camera_info, ray-cast from the published course at the vehicle's pose
+(launch mark facing up the first corridor), to load-test the node with realistic depth.
 """
 import json
 import math
+import os
+from pathlib import Path
 import sys
 import time
 
@@ -21,6 +27,7 @@ from rclpy.qos import qos_profile_sensor_data
 import px4_msgs.msg as px4
 
 OUT = sys.argv[1] if len(sys.argv) > 1 else "/tmp/fake_px4.json"
+YAW_RATE = 1.0                      # rad/s
 
 
 class FakePX4(Node):
@@ -42,6 +49,8 @@ class FakePX4(Node):
         self.create_subscription(px4.TrajectorySetpoint, "/fmu/in/trajectory_setpoint", self.on_sp, q)
         self.create_subscription(px4.OffboardControlMode, "/fmu/in/offboard_control_mode", self.on_mode, q)
         self.dt = .02
+        if os.environ.get("FAKE_DEPTH") == "1":
+            self.setup_depth()
         self.slow = {"status": [1 / 1.7, -1e9, None], "land": [1 / .9, -1e9, None]}   # period, last t, last value
         self.create_timer(self.dt, self.step)
 
@@ -73,7 +82,8 @@ class FakePX4(Node):
             d = self.sp[0] - self.pos
             n = np.linalg.norm(d)
             self.pos += d if n < 1.0 * self.dt else d / n * 1.0 * self.dt
-            self.yaw = self.sp[1]
+            turn = math.atan2(math.sin(self.sp[1] - self.yaw), math.cos(self.sp[1] - self.yaw))
+            self.yaw += max(-YAW_RATE * self.dt, min(YAW_RATE * self.dt, turn))   # PX4 limits yaw rate too
         elif self.nav == 18:
             self.pos[2] = min(0.0, self.pos[2] + .5 * self.dt)   # NED z up to 0 = descending
             if self.pos[2] >= 0.0 and self.arming == 2:
@@ -107,6 +117,56 @@ class FakePX4(Node):
             self.slow[key][1:] = [now, value]
             return True
         return False
+
+    # ------------------------------------------------------------------ fake depth camera
+    K = (421.016, 0.0, 319.25, 0.0, 421.016, 200.66, 0.0, 0.0, 1.0)     # FlyX lab CameraInfo
+    W, H = 640, 400
+
+    def setup_depth(self):
+        from sensor_msgs.msg import CameraInfo, Image
+        sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+        from pathplan.harness import load_published
+        from pathplan.world import GridSpec, occupancy
+        course, _ = load_published()
+        self.spec = GridSpec()
+        self.occ = occupancy(course, self.spec, altitude=.9, half_height=.05)
+        self.Image, self.CameraInfo = Image, CameraInfo
+        self.depth_pub = self.create_publisher(Image, "/camera/depth/image_raw", qos_profile_sensor_data)
+        self.info_pub = self.create_publisher(CameraInfo, "/camera/depth/camera_info", qos_profile_sensor_data)
+        self.create_timer(1 / 13, self.publish_depth)
+
+    def publish_depth(self):
+        depth = render_depth(self.occ, self.spec, self.pos, self.yaw, self.K, self.W, self.H)
+        mm = np.where(np.isfinite(depth) & (depth < 10), depth * 1000, 0).astype("<u2")
+        stamp = self.get_clock().now().to_msg()
+        img = self.Image(height=self.H, width=self.W, encoding="16UC1", step=self.W * 2, data=mm.tobytes())
+        img.header.stamp, img.header.frame_id = stamp, "oak_left"
+        self.depth_pub.publish(img)
+        info = self.CameraInfo(height=self.H, width=self.W, k=list(self.K))
+        info.header.stamp, info.header.frame_id = stamp, "oak_left"
+        self.info_pub.publish(info)
+
+
+def render_depth(occ, spec, pos_ned, yaw_ned, K, W, H):
+    """Depth image (m, inf = no return) of the course walls (occupancy at flight height,
+    1.73 m tall) and the floor, from a vehicle at NED pos/yaw (origin = launch mark facing north)."""
+    fx, cx, fy, cy = K[0], K[2], K[4], K[5]
+    # NED -> course frame (launch mark (-2.515, 0.914), facing course +y)
+    x, y, z = pos_ned[1] - 2.515, pos_ned[0] + .914, .05 - pos_ned[2]
+    yaw = math.pi / 2 - yaw_ned
+    cam = np.array([x, y]) + .115 * np.array([math.cos(yaw), math.sin(yaw)])
+    ang = np.arctan((np.arange(W) - cx) / fx)                            # + = right of the heading
+    dirs = np.stack([np.cos(yaw - ang), np.sin(yaw - ang)], 1)
+    r = np.arange(.05, 4.0, .025)
+    rc = spec.to_cell(cam[None, None] + r[None, :, None] * dirs[:, None])
+    hit = occ[rc[..., 0], rc[..., 1]]
+    wall = np.where(hit.any(1), r[np.argmax(hit, 1)], np.inf)              # horizontal range per column
+    slope = (np.arange(H) - cy)[:, None] / fy                              # + = below the horizon
+    zc = z + .029
+    floor = np.where(slope > 1e-6, zc / np.maximum(slope, 1e-6), np.inf)
+    top_ok = zc - slope * wall[None] <= 1.73                               # ray meets the wall below its top
+    horiz = np.where(floor < wall[None], floor, np.where(top_ok, wall[None], np.inf))
+    return horiz * np.cos(ang)[None]                                       # optical z
 
 
 def main():

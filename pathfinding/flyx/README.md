@@ -64,6 +64,17 @@ Reached NAVIGATE, then landed ~20 s in: `pose stale or estimator invalid`. Found
    Ctrl-C no longer kills ROS before Land is published; SIGTERM also lands.
 5. `--depth-topic /stereo/depth` does not exist in the lab; use `/camera/depth/image_raw`.
 
+**Runs 3-4** landed during takeoff on "local_position stale (0.69 s)", then "odometry stale
+(0.42 s)": our own process stalled, not PX4. Planning and depth projection are pure-Python CPU
+work and shared the GIL with the PX4 callbacks. Reproduced with `FAKE_DEPTH=1 fake_px4.py`
+(ray-cast 640x400 depth at 13 Hz) on a fully loaded CPU: 8 stalls up to 0.41 s. Fixes:
+- the planner + depth projection run in a **separate process** (`PlannerProcess`): same test,
+  0 stalls, full course flown and landed on the pad;
+- depth frames are placed with the **pose at capture time** (odometry nearest the image stamp),
+  not the latest pose: with the latest pose, turns smeared walls and sealed the bend after
+  checkpoint 1 ("no path");
+- local_position (validity flags only) may be 2 s old; odometry still 0.3 s.
+
 Tested: `tests/test_flyx_mission.py`; full ROS wiring in Jazzy against `fake_px4.py`
 (status at the lab's slow rates): course completed, 3 commands (Offboard, arm, land);
 shadow + Ctrl-C sends nothing; `--execute` + SIGTERM mid-flight sends Land.
