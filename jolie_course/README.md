@@ -5,7 +5,27 @@ Two ways to fly the same planner:
 | File | Interface | Where | Status |
 |---|---|---|---|
 | **`upload_to_flyx.py`** | **native PX4**: publishes `/fmu/in/*` itself (Offboard, arm, land) | **FlyX lab only** | **Completed the whole course in FlyX (Jolie, 2026-11-07).** Frozen: do not edit. |
-| `jolie_course.py` | Sky Beta: `/skybeta/setpoint/pose` through the organizer's flight interface | FlyX via `run.sh`, and **the drone** | Same behaviour, ported; not yet flown end to end |
+| **`upload_to_flyx_skybeta.py`** | Sky Beta | FlyX via `run.sh jolie_flyx`, and **the drone** | **The FlyX-proven file itself with only its PX4 I/O swapped** (its embedded mission and planner are byte-identical). Built by `build_skybeta_copy.py`; not yet flown |
+| `jolie_course.py` | Sky Beta: `/skybeta/setpoint/pose` through the organizer's flight interface | FlyX via `run.sh`, and **the drone** | Isaac's Sky Beta node with the same turn changes ported; not yet flown |
+
+## `upload_to_flyx_skybeta.py`: the proven file on the drone's interface
+
+```
+bash flyx_skybeta/run.sh jolie_flyx                  # FlyX / sim: flight interface + this + sim pilot
+python3 jolie_course/upload_to_flyx_skybeta.py       # on the drone (the interface is up; the pilot arms)
+```
+
+`python3 jolie_course/build_skybeta_copy.py` regenerates it from `upload_to_flyx.py`, which is
+never modified. It keeps every embedded module byte for byte, including her mission state
+machine, the planner, and both turn changes. It replaces only the PX4 I/O (`skybeta_main.py.in`):
+- **In:** cuVSLAM odometry, mapped ENU to NED with the flight interface's own REP-103 map, plus
+  `/skybeta/state`.
+- **Out:** `/skybeta/setpoint/pose`.
+- **Never:** arms, changes mode, or lands. Her `LAND` state holds over the pad and is the pilot's
+  cue.
+
+Status topic: `/jolie_flyx/status`. Checked: the frame chain at arbitrary start poses (1 m up the
+corridor lands 1 m along the start heading, to 1e-16), and ROS start-up and Ctrl-C under Jazzy.
 
 ## `upload_to_flyx.py`: the FlyX run that worked
 

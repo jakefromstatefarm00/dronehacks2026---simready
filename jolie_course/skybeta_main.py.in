@@ -1,0 +1,267 @@
+def main(argv=None):
+    a = parse_args(argv)
+    build_planner = _build_planner_embedded
+    planner = PlannerProcess(build_planner, (a.planner, a.altitude, a.camera_offset, a.camera_pitch_down_deg,
+                                             a.carrot))     # first: it forks
+    import rclpy
+    from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
+    from rclpy.clock import Clock, ClockType
+    from rclpy.executors import SingleThreadedExecutor
+    from rclpy.node import Node
+    from rclpy.qos import qos_profile_sensor_data
+    from geometry_msgs.msg import PoseStamped
+    from nav_msgs.msg import Odometry
+    from sensor_msgs.msg import CameraInfo, Image
+    from std_msgs.msg import String
+
+    # Same mission as the FlyX file. The pilot arms and the interface enters Offboard whenever they
+    # are ready, so there is no acknowledgement timeout; Offboard / arm / Land requests are not sent.
+    mission = Mission(planner, MissionConfig(
+        execute=a.execute, altitude=a.altitude, carrot_m=a.carrot, launch_xy=tuple(a.launch_xy),
+        launch_heading=a.launch_heading, launch_body_agl=a.launch_body_agl, pad_xy=tuple(planner.pad_xy),
+        ack_timeout_s=1e9))
+    a.output.mkdir(parents=True, exist_ok=False)
+    journal = open(a.output / "journal.jsonl", "w", encoding="utf-8")
+
+    # The journal is written by its own thread: a slow disk must never hold up the setpoint loop.
+    log_queue, log_closed = queue.Queue(), threading.Event()
+
+    def journal_writer():
+        while True:
+            line = log_queue.get()
+            if line is None:
+                return
+            journal.write(line)
+            journal.flush()
+
+    writer = threading.Thread(target=journal_writer, daemon=True)
+    writer.start()
+
+    def log(record):
+        if not log_closed.is_set():           # callbacks may still fire while shutting down
+            log_queue.put(json.dumps(record, default=float) + "\n")
+
+    class SkybetaNode(Node):
+        def __init__(self):
+            super().__init__("jolie_flyx")
+            self.tel = Telemetry(now=0.0)
+            self.tel.pose_frame = POSE_FRAME_NED  # odometry is mapped to NED in on_odom
+            self.poses = deque(maxlen=300)      # (ROS time, NED position, q): ~3 s of odometry
+            self.poses_lock = threading.Lock()  # odometry thread appends, depth thread reads
+            self.depth_stats = {"frames": 0, "matched": 0, "fallback": 0, "unmatched": 0, "turning": 0}
+            self.px4_modes, self.stalls = [], []
+            self.intr = None
+            self.last_sky = {}
+            sensors, depth_group, control = (MutuallyExclusiveCallbackGroup() for _ in range(3))
+            # steady clock: a stalled, slow or missing /clock must not stop the setpoint stream
+            steady = Clock(clock_type=ClockType.STEADY_TIME)
+            # planning (blocks on the planner process for up to ~1 s) runs on its own thread, see main()
+            self.create_timer(.05, self.on_control, callback_group=control, clock=steady)
+            self.status_pub = self.create_publisher(String, "~/status", 10)
+            self.sp_pub = (self.create_publisher(PoseStamped, "/skybeta/setpoint/pose", 10)
+                           if a.execute else None)
+            self.create_subscription(Odometry, a.odometry_topic, self.on_odom, qos_profile_sensor_data,
+                                     callback_group=sensors)
+            self.create_subscription(String, "/skybeta/state", self.on_state, 10, callback_group=sensors)
+            if a.depth_topic:
+                info = a.camera_info_topic or a.depth_topic.rsplit("/", 1)[0] + "/camera_info"
+                self.create_subscription(Image, a.depth_topic, self.on_depth, qos_profile_sensor_data,
+                                         callback_group=depth_group)
+                self.create_subscription(CameraInfo, info, self.on_info, qos_profile_sensor_data,
+                                         callback_group=depth_group)
+            else:
+                self.get_logger().warn("no --depth-topic: planning on the published map only")
+            self.last_state = None
+            self.last_tick = None
+            self.get_logger().info(f"jolie_flyx up (Sky Beta contract, {'FLYING' if a.execute else 'SHADOW'}); "
+                                   f"odometry {a.odometry_topic}; journal {a.output}. "
+                                   "The pilot arms; the flight interface enters Offboard.")
+
+        def now(self):
+            return self.get_clock().now().nanoseconds * 1e-9
+
+        # ---------------------------------------------------------- inputs
+        def on_odom(self, msg):
+            t, tel = time.monotonic(), self.tel        # arrival time, monotonic (see Telemetry)
+            p, o = msg.pose.pose.position, msg.pose.pose.orientation
+            try:
+                q = enu_flu_to_ned_frd((o.w, o.x, o.y, o.z))
+            except ValueError:
+                return
+            tel.odom_t, tel.position_ned, tel.q_ned_frd = t, enu_to_ned((p.x, p.y, p.z)), q
+            stamp = msg.header.stamp.sec + msg.header.stamp.nanosec * 1e-9
+            with self.poses_lock:
+                self.poses.append((stamp if stamp > 0 else self.now(), tel.position_ned, tel.q_ned_frd))
+
+        def on_state(self, msg):
+            try:
+                st = json.loads(msg.data)
+            except ValueError:
+                return
+            t, tel = time.monotonic(), self.tel
+            armed, offboard = bool(st.get("armed")), bool(st.get("offboard_active"))
+            nav = NAV_OFFBOARD if offboard else 0
+            if nav != tel.nav_state or (ARMED if armed else DISARMED) != tel.arming_state:
+                self.px4_modes.append(f"{st.get('nav_state_name')} armed={armed} offboard_active={offboard}")
+                log({"kind": "px4_mode", "t": self.now(), "nav_state": st.get("nav_state"),
+                     "nav_state_name": st.get("nav_state_name"), "armed": armed, "offboard_active": offboard})
+            tel.status_t = tel.local_t = tel.landed_t = t
+            tel.arming_state, tel.nav_state, tel.user_intention = (ARMED if armed else DISARMED), nav, nav
+            tel.failsafe = False
+            tel.landed = not armed                      # the pilot lands and disarms
+            tel.xy_valid = tel.z_valid = bool(st.get("px4_link")) and st.get("local_enu") is not None
+            if st.get("clamped") and st.get("clamped") != self.last_sky.get("clamped"):
+                log({"kind": "clamped", "t": self.now(), "clamped": st.get("clamped")})
+            self.last_sky = st
+
+        def on_info(self, msg):
+            if self.intr is None:
+                self.intr = list(msg.k)
+                log({"kind": "camera_info", "k": list(msg.k), "width": msg.width, "height": msg.height,
+                     "frame_id": msg.header.frame_id})
+
+        def pose_at(self, stamp):
+            """(course pose when the image was taken, yaw rate then): odometry nearest its header
+            stamp, same ROS clock. Projecting with the latest pose smears walls during turns."""
+            with self.poses_lock:
+                poses = list(self.poses)
+            if stamp > 0 and poses:
+                t, pos, q = min(poses, key=lambda p: abs(p[0] - stamp))
+                if abs(t - stamp) <= .05:
+                    self.depth_stats["matched"] += 1
+                    t0, _, q0 = min(poses, key=lambda p: abs(p[0] - (stamp - .15)))
+                    dyaw = yaw_from_q_ned(q) - yaw_from_q_ned(q0)
+                    rate = abs(math.atan2(math.sin(dyaw), math.cos(dyaw))) / max(t - t0, .05)
+                    return odom_to_course(mission.frame, pos, q), rate
+            if self.depth_stats["matched"] >= 20:      # stamps do match normally: this frame fell in a
+                self.depth_stats["unmatched"] += 1      # gap in the pose history (a stall) - skip it
+                return None, 0.0
+            self.depth_stats["fallback"] += 1           # unstamped / other clock: latest pose
+            return mission.pose_course, 0.0
+
+        def on_depth(self, msg):
+            if mission.frame is None or self.intr is None or not mission.planning_allowed():
+                return
+            self.depth_stats["frames"] += 1
+            if self.depth_stats["frames"] % 100 == 1:
+                log({"kind": "depth", "t": self.now(), **self.depth_stats, "quality": planner.depth_quality})
+            pose, rate = self.pose_at(msg.header.stamp.sec + msg.header.stamp.nanosec * 1e-9)
+            if pose is None:
+                return
+            xyz, _, rotation = pose
+            if rate > MAX_TURN_RATE:
+                self.depth_stats["turning"] += 1
+                return
+            # the planner process takes the latest frame at its next step (<= 5 Hz)
+            planner.give_frame((bytes(msg.data), msg.width, msg.height, msg.encoding, msg.step, self.intr,
+                                xyz, rotation))
+
+        # ---------------------------------------------------------- planning
+        def on_plan(self):
+            t0 = time.perf_counter()
+            cmd = mission.plan()
+            ms = 1e3 * (time.perf_counter() - t0)
+            if cmd is not None:
+                log({"kind": "plan", "t": self.now(), "mode": cmd.mode, "reason": cmd.reason, "ms": round(ms, 1),
+                     "planner_ms": round(planner.ms, 1),
+                     "target": None if mission.target is None else [list(mission.target[0]), mission.target[1]],
+                     "cleared": [c["name"] for c in planner.cleared]})
+
+        # ---------------------------------------------------------- control
+        def on_control(self):
+            mono, sim = time.monotonic(), self.now()
+            if self.last_tick is not None:                     # control timer is 20 Hz
+                gap = mono - self.last_tick
+                if gap > .15:
+                    self.stalls.append(gap)
+                    log({"kind": "timing", "t": sim, "gap_s": round(gap, 3)})
+            self.last_tick = mono
+            self.tel.now, self.tel.sim_now = mono, None        # flight limit on the steady clock
+            out = mission.tick(self.tel)
+            if out.state != self.last_state:
+                note = mission.events[-1]["note"] if mission.events and mission.events[-1]["to"] == out.state else ""
+                self.get_logger().info(f"state {self.last_state} -> {out.state} {note or out.note}")
+                log({"kind": "state", "t": sim, "state": out.state, "note": out.note,
+                     "events": mission.events[-1:]})
+                self.last_state = out.state
+            self.status_pub.publish(String(data=json.dumps({
+                "state": out.state, "note": out.note, "planner": mission.planner_status,
+                "cleared": [c["name"] for c in planner.cleared]})))
+            if out.command is not None:                        # Offboard / arm / Land: the pilot does these
+                log({"kind": "pilot_action", "t": sim, "command": out.command.command, "state": out.state})
+            if out.setpoint is None or self.sp_pub is None:
+                return                                         # pose setpoints persist: the interface holds
+            pos, yaw = out.setpoint
+            msg = PoseStamped()
+            msg.header.stamp = self.get_clock().now().to_msg()
+            msg.header.frame_id = "odom"
+            msg.pose.position.x, msg.pose.position.y, msg.pose.position.z = enu_to_ned(pos)   # same map back
+            yaw_enu = math.pi / 2 - float(yaw)
+            msg.pose.orientation.w, msg.pose.orientation.z = math.cos(yaw_enu / 2), math.sin(yaw_enu / 2)
+            self.sp_pub.publish(msg)
+
+    from rclpy.signals import SignalHandlerOptions
+    rclpy.init(signal_handler_options=SignalHandlerOptions.NO)
+
+    def interrupt(signum, frame):
+        raise KeyboardInterrupt
+    signal.signal(signal.SIGINT, interrupt)
+    signal.signal(signal.SIGTERM, interrupt)
+    node = SkybetaNode()
+    # Single-threaded executor: every ROS callback is short (Jolie: MultiThreadedExecutor ~73 % of a
+    # core vs ~13 %); planning runs on its own thread.
+    executor = SingleThreadedExecutor()
+    executor.add_node(node)
+    planning_stop = threading.Event()
+
+    def planning_loop():                        # 5 Hz, outside the executor
+        while not planning_stop.is_set():
+            t0 = time.monotonic()
+            try:
+                node.on_plan()
+            except Exception:
+                import traceback
+                log({"kind": "error", "where": "planning", "error": traceback.format_exc()})
+            planning_stop.wait(max(0.0, .2 - (time.monotonic() - t0)))
+
+    planning_thread = threading.Thread(target=planning_loop, daemon=True)
+    planning_thread.start()
+
+    def spin():
+        try:
+            executor.spin()
+        except Exception:                       # a callback raised: rclpy stops the executor
+            import traceback
+            log({"kind": "error", "where": "callback", "error": traceback.format_exc()})
+            print(traceback.format_exc(), file=sys.stderr, flush=True)
+
+    spinner = threading.Thread(target=spin, daemon=True)
+    spinner.start()
+    try:
+        while rclpy.ok() and spinner.is_alive() and mission.state not in ("DONE", "FAILED", "TAKEN_OVER"):
+            time.sleep(.1)
+        if not spinner.is_alive():              # the interface holds the last pose; the pilot lands
+            node.get_logger().error(f"executor stopped in {mission.state}: the pilot must land")
+    except KeyboardInterrupt:
+        pass                                    # pose setpoints persist: the interface holds; the pilot lands
+    finally:
+        signal.signal(signal.SIGINT, signal.SIG_IGN)     # a second Ctrl-C must not break the clean-up
+        signal.signal(signal.SIGTERM, signal.SIG_IGN)
+        log({"kind": "end", "state": mission.state, "events": mission.events, "depth": node.depth_stats,
+             "depth_quality": planner.depth_quality,
+             "cleared": planner.cleared, "planner_events": planner.events})
+        print_summary(mission, planner, node, a.output / "journal.jsonl")
+        planning_stop.set()
+        planning_thread.join(timeout=3.0)       # finish the step in flight before closing its pipe
+        executor.shutdown(timeout_sec=1.0)
+        planner.close()
+        node.destroy_node()
+        log_closed.set()
+        log_queue.put(None)
+        writer.join(timeout=3.0)
+        journal.close()
+        rclpy.try_shutdown()
+
+
+if __name__ == "__main__":
+    main()

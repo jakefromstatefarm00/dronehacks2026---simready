@@ -9,6 +9,7 @@
 #
 #   bash flyx_skybeta/run.sh suraj   [program args]   # suraj_course/suraj_course.py
 #   bash flyx_skybeta/run.sh jolie   [program args]   # jolie_course/jolie_course.py (+ FlyX depth camera)
+#   bash flyx_skybeta/run.sh jolie_flyx [args]        # jolie_course/upload_to_flyx_skybeta.py (FlyX-proven file, Sky Beta I/O)
 #   PILOT=direct bash flyx_skybeta/run.sh ...         # if PX4 refuses the Altitude/Position handshake
 #
 # team_mission (Jake's) has its own launcher: ros2 launch team_mission sim.launch.py (see its README).
@@ -22,7 +23,9 @@ case "$WHAT" in
   jolie) PROG=(python3 -u "$ROOT/jolie_course/jolie_course.py" --ros-args
                -p depth_topic:=/camera/depth/image_raw "$@")
          STATUS=/dronehacks_pathplan/status ;;
-  *) echo "usage: run.sh suraj|jolie [args]"; exit 2 ;;
+  jolie_flyx) PROG=(python3 -u "$ROOT/jolie_course/upload_to_flyx_skybeta.py" "$@")   # Jolie's FlyX-proven file, Sky Beta I/O
+         STATUS=/jolie_flyx/status ;;
+  *) echo "usage: run.sh suraj|jolie|jolie_flyx [args]"; exit 2 ;;
 esac
 FI_SRC="$ROOT/skybeta/src/skybeta_flight_interface"
 PILOT_SRC="$ROOT/team_ws/src/team_mission"

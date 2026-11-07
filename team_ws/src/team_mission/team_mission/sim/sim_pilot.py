@@ -125,7 +125,8 @@ class SimPilot(Node):
             ready = st.get('px4_link') and st.get('local_enu') is not None
             if self.require_mission:      # the mission is up and streaming hold setpoints
                 ready = ready and (self.mission.get('phase') == 'DORMANT'
-                                   or self.mission.get('state') in ('STREAM', 'WAIT_FOR_OFFBOARD'))
+                                   or self.mission.get('state') in ('STREAM', 'WAIT_OFFBOARD',
+                                                                    'WAIT_FOR_OFFBOARD'))
             if ready and dt > self.wait_s:
                 self.goto('MODE')
         elif self.step_name == 'MODE':
