@@ -1,0 +1,21 @@
+{
+  "kind": "reference_clearance_screen_not_flight_or_course_grade",
+  "input_hashes": {
+    "artifacts\\sky-beta-model-v3\\course-sky-beta.xml": "1db269d27278e28eb07298bd14efeffc1b5f269cff0dbc12681332a827c33626",
+    "flyx_square\\results\\gazebo-v123\\truth-poses.csv": "6f7018def7734a767f2fd38f9975672ab53731f279636af12a87d0d2a62ddecc",
+    "artifacts\\sky-beta-estimated-v4\\airframe-contract.json": "96e47264f67a85c5aba5eacef8b9deb1b4ac53a4b009ab3c04e1e2e70310c70d"
+  },
+  "radius_m": 0.27994436200624684,
+  "half_height_m": 0.13,
+  "tracking_margin_m": 0.0,
+  "source_interval_s": [
+    131.4,
+    152.2
+  ],
+  "sampling_dt_s": 0.005,
+  "penetrating_contact_samples": 0,
+  "max_penetration_m": 0.0,
+  "first_contacts": [],
+  "reference_screen_passed": true,
+  "limitations": "Tilted enclosing cylinder plus stated tracking margin versus convex-decomposed course mesh. Sampled reference only; no swept-volume proof, live flight, takeoff/landing or hardware qualification."
+}
