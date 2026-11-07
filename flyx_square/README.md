@@ -40,6 +40,8 @@ climb 0.9 m -> forward 0.6 m -> up 0.6 m -> back 0.6 m -> down 0.6 m -> land (na
 | v122 | 2 s | armed 4 s after the rig set the drone down; OpenVINS lost every feature at liftoff, PX4 dropped `xy_valid`, main.py **landed itself** (guard worked) |
 | **v123** | 45 s | **square complete, landed + disarmed, exit 0**. Arm → disarm 28.2 s (airborne 21.1 s). Truth: forward 0.64 m (plan 0.6), peak 1.42 m above start (plan 1.5), sideways 0.01 m, touchdown 5 mm from take-off, **0 contacts** while airborne |
 
+| **v124** | 10 s (committed default, no arguments) | **square complete, landed + disarmed, exit 0**. Arm → disarm 27.8 s. Truth: forward 0.64 m, peak 1.42 m, sideways 0.00 m, touchdown 6 mm from take-off |
+
   Video: `results/gazebo-v123/flight-video/flight.mp4` (top: overhead observer, bottom:
   onboard stereo with VIO tracks). Journal, truth track and contact check alongside.
   Hence the 10 s default settle (the lab's estimator has run since Reset world, so it
