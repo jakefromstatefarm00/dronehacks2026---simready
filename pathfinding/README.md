@@ -13,7 +13,7 @@ Everything needed to run, test and change our pathfinding. Three things live her
 ```bash
 cd pathfinding
 python3 -m venv .venv && .venv/bin/pip install -r requirements.txt     # Windows: .venv\Scripts\pip
-.venv/bin/python -m pytest -q tests                                     # 126 tests, ~15 s
+.venv/bin/python -m pytest -q tests                                     # 128 tests, ~15 s
 .venv/bin/python -m pathplan.harness --variants 4 --output runs/bench   # offline benchmark, ~4 min
 bash gzsim/run.sh                                                        # Gazebo flight (Linux/WSL + Docker)
 ```
@@ -86,6 +86,9 @@ unmapped cylinders; `gzsim/fly_planner.py` flies `OnlinePlanner` with ground-tru
 | verify-1 | published | on | completed, 107.2 s, 0 contacts, min clearance 0.369 m (X3 radius 0.36), landed 0.03 m — with tight-spot slow-down |
 | verify-2 | published | on | completed, 92.2 s, 0 contacts, min clearance 0.378 m, landed 0.05 m — same settings, repeat |
 | verify-3 | + 1 unmapped cylinder | on | **failed: stalled** turning in place SE of the cylinder (0 contacts, timeout 240 s); run 05 in the same world completed |
+| commit-1 | + 1 unmapped cylinder | on | completed, 109.1 s, 0 contacts, landed 0.07 m — **with path commitment** (fixes verify-3) |
+| commit-2 | + 1 unmapped cylinder | on | completed, 196.8 s, 0 contacts, landed 0.05 m — safe but over the 180 s run limit |
+| commit-3 | published | on | completed, 98.1 s, 0 contacts, min clearance 0.379 m, landed 0.06 m |
 
 ```bash
 bash gzsim/run.sh                          # published course, depth on
@@ -99,9 +102,10 @@ maze wall M1 leaves it ~6 cm, so Gazebo runs need the 2.5 cm grid (`--resolution
 not always clean there (one earlier run touched the north net). The adapter now slows down where
 the published map is tight (`--tight-speed`, from map clearance, never ground truth); both runs since
 were clean. Gazebo
-uses ground-truth pose (no cuVSLAM) and velocity control (not PX4). Near an unmapped obstacle two routes can cost almost the same and the plan can flip between
-them each replan, so the look-ahead turn never settles (verify-3); path commitment is the next
-fix. Depth frames are
+uses ground-truth pose (no cuVSLAM) and velocity control (not PX4). Near an unmapped obstacle two routes can cost almost the same; the planner now keeps its route
+unless a new one is >10 % cheaper (`commit_margin`), which fixed the verify-3 stall. Gazebo
+times are slow (98–197 s) because of the X3's cautious tight-spot speed (0.15 m/s) — speed
+tuning is open. Depth frames are
 projected with the latest pose, not the pose at capture time â€” fine at these speeds, the
 next thing to fix. Checkpoint lines 1â€“2 are our reading of the rules, not official
 coordinates.

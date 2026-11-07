@@ -129,6 +129,41 @@ def test_start_inside_goal_cell_does_not_stall():
     assert r.outcome == "finished"
 
 
+def _side_of_pillar(poly):
+    """-1 if the route passes left of x = 0 at the pillar's height, +1 if right."""
+    mid = [p for p in poly if -.3 < p[1] < .3]
+    return int(np.sign(np.mean([p[0] for p in mid]))) if mid else 0
+
+
+@pytest.mark.parametrize("margin, expect_flips", [(0.0, True), (.10, False)])
+def test_path_commitment_keeps_the_route_through_near_ties(margin, expect_flips):
+    """Pillar dead centre: left and right nearly tie, and a few cm of pose wobble tips the
+    choice each replan. Without commitment the route flips sides; with it, it stays."""
+    from pathplan.online import OnlinePlanner, PlannerConfig
+    occ = box(arena(), -.15, .15, -.15, .15)
+    planner = OnlinePlanner(occ, SPEC, ENV, GOAL, PlannerConfig(commit_margin=margin, lookahead_m=0))
+    sides = []
+    for i in range(12):
+        wobble = .06 if i % 2 else -.06
+        cmd = planner.update(np.array([wobble, -1.1]), np.pi / 2)
+        assert cmd.mode == "move"
+        sides.append(_side_of_pillar(cmd.path))
+        planner.dirty = True                                  # force a replan every step
+    assert (len(set(sides)) > 1) == expect_flips, sides
+
+
+def test_path_commitment_switches_when_the_route_is_blocked():
+    from pathplan.online import OnlinePlanner, PlannerConfig
+    occ = box(arena(), -.15, .15, -.15, .15)
+    planner = OnlinePlanner(occ, SPEC, ENV, GOAL, PlannerConfig(lookahead_m=0))
+    pos = np.array([0.0, -1.1])
+    side = _side_of_pillar(planner.update(pos, np.pi / 2).path)
+    # a wall appears on that side, from the pillar to the arena edge
+    wall = box(np.zeros_like(occ), .15, 1.5, -.05, .05) if side > 0 else box(np.zeros_like(occ), -1.5, -.15, -.05, .05)
+    planner.observe(np.empty((0, 2), int), np.argwhere(wall), np.empty((0, 2), int))
+    assert _side_of_pillar(planner.update(pos, np.pi / 2).path) == -side
+
+
 @pytest.mark.parametrize("bad", ["fly", ""])
 def test_unknown_planner_rejected(bad):
     with pytest.raises(ValueError):

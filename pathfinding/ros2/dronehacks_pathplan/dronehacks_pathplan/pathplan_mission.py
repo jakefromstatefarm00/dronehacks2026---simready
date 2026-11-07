@@ -300,6 +300,9 @@ def main(args=None):
         executor.spin()
     except (KeyboardInterrupt, ExternalShutdownException):
         pass
+    except Exception:                      # a signal shut the context down mid-wait: a normal stop
+        if rclpy.ok():
+            raise
     finally:
         executor.shutdown()
         node.destroy_node()
