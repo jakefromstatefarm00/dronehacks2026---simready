@@ -36,7 +36,7 @@ The pathfinder also needs numpy and scipy.
 
 ## Status
 
-- **Offline:** 20 tests (`python3 -m pytest -q flyx_course`), including the Sky Beta mode with a
+- **Offline:** 15 tests (`python3 -m pytest -q flyx_course`), all on the Sky Beta contract with a
   fake pilot. It flies the full route and holds over the pad; it does not move before the pilot
   arms; it holds on an odometry outage; it stops commanding when the pilot takes over.
 - **Laptop Isaac + cuVSLAM:** the full chain started. The flight interface linked to PX4, and
