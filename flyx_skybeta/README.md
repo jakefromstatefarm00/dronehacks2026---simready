@@ -25,7 +25,9 @@ corridor, and get the team's OK. Ctrl-C makes the sim pilot land.
 3. **`team_ws/src/team_mission/team_mission/sim/sim_pilot.py`** (Jake's). It is **SIM ONLY**
    and refuses to start on the drone. It does the safety pilot's job, the real way: arm in
    Altitude, then switch to Position. The interface then enters Offboard on its own. When the
-   program reports `HOLD` or `LAND`, or after 240 s, the pilot lands.
+   program reports `HOLD` / `ready_to_land` (or `TAKEN_OVER`), when its status goes silent for 3 s,
+   after 240 s, or on Ctrl-C / SIGTERM, the pilot lands. It switches to Position once (resent only
+   if PX4 is still in Altitude a second later), so it never knocks PX4 back out of Offboard.
 
    If PX4 refuses the Altitude handshake, run `PILOT=direct bash flyx_skybeta/run.sh ...`
    instead: arm in Hold, then call `/skybeta/request_offboard`.

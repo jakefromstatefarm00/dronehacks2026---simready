@@ -23,8 +23,12 @@ disarmed after timeout_s, it commands LAND, like a pilot taking over.
     ros2 run team_mission sim_pilot --ros-args -p use_sim_time:=true -p mode:=handshake
 """
 import json
+import signal
+import time
 
 import rclpy
+from rclpy.executors import ExternalShutdownException
+from rclpy.signals import SignalHandlerOptions
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
 from std_msgs.msg import String
@@ -65,7 +69,7 @@ class SimPilot(Node):
         self.mode = str(g('mode'))
         self.wait_s, self.timeout_s = float(g('wait_s')), float(g('timeout_s'))
         self.require_mission = bool(g('require_mission'))
-        self.state, self.mission = {}, {}
+        self.state, self.mission, self.mission_t = {}, {}, None
         self.step_name, self.step_t, self.flight_t = 'WAIT_READY', self.now(), None
         self.was_armed = False
         self.create_timer(0.05, self.tick)
@@ -83,6 +87,7 @@ class SimPilot(Node):
     def on_mission(self, m):
         try:
             self.mission = json.loads(m.data)
+            self.mission_t = time.monotonic()
         except ValueError:
             pass
 
@@ -144,7 +149,13 @@ class SimPilot(Node):
         elif self.step_name == 'HANDOVER':
             if dt > 2.0 and dt < 4.0:
                 if self.mode == 'handshake':
-                    self.command(CMD_DO_SET_MODE, 1, MAIN_POSCTL)
+                    # ONE switch to Position, like the pilot's flick. Repeating it every tick knocked PX4
+                    # back out of the Offboard the interface had just entered (review: 70 % of 2000
+                    # simulated hand-offs ended in POSCTL). Resend only if PX4 is still in Altitude 1 s on.
+                    if not getattr(self, 'pos_sent_t', None) or (
+                            t - self.pos_sent_t > 1.0 and st.get('nav_state_name') == 'ALTCTL'):
+                        self.command(CMD_DO_SET_MODE, 1, MAIN_POSCTL)
+                        self.pos_sent_t = t
                 elif int(dt * 20) % 10 == 0:
                     self.call_request_offboard()
             if st.get('offboard_active'):
@@ -158,7 +169,10 @@ class SimPilot(Node):
                 self.get_logger().info(f'disarmed {t - self.flight_t:.1f} s after arming. Flight over.')
                 self.goto('DONE')
             elif (self.mission.get('ready_to_land') if 'ready_to_land' in self.mission
-                  else self.mission.get('state') in self.land_states):
+                  else self.mission.get('state') in self.land_states | {'TAKEN_OVER'}) or (
+                      self.mission_t is not None and time.monotonic() - self.mission_t > 3.0):
+                if self.mission_t is not None and time.monotonic() - self.mission_t > 3.0:
+                    self.mission['note'] = 'mission status silent for 3 s (program stopped?)'
                 self.get_logger().info(f'mission reports {self.mission.get("state")} '
                                        f'({self.mission.get("note", "")}): pilot lands')
                 self.command(CMD_LAND)
@@ -184,15 +198,21 @@ class SimPilot(Node):
 
 
 def main(args=None):
-    rclpy.init(args=args)
+    # Our own SIGINT/SIGTERM handling: rclpy's would shut the context down first, so LAND could no
+    # longer be published (and a script's background job may start with SIGINT ignored).
+    rclpy.init(args=args, signal_handler_options=SignalHandlerOptions.NO)
+
+    def interrupt(signum, frame):
+        raise KeyboardInterrupt
+    signal.signal(signal.SIGINT, interrupt)
+    signal.signal(signal.SIGTERM, interrupt)
     n = SimPilot()
     try:
         rclpy.spin(n)
-    except SystemExit:
+    except (SystemExit, ExternalShutdownException):
         pass
-    except KeyboardInterrupt:              # Ctrl-C = the pilot takes over: land if still armed
+    except KeyboardInterrupt:              # Ctrl-C / SIGTERM = the pilot takes over: land if still armed
         if n.state.get('armed'):
-            import time
             for _ in range(5):
                 n.command(CMD_LAND)
                 time.sleep(0.2)

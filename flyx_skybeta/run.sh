@@ -62,5 +62,9 @@ PYTHONPATH="$PILOT_SRC:$FI_SRC${PYTHONPATH:+:$PYTHONPATH}" python3 -u -c \
   "from team_mission.sim.sim_pilot import main; main()" --ros-args \
   -p mode:="${PILOT:-handshake}" -p status_topic:="$STATUS" > >(tee "$OUT/pilot.log") 2>&1 &
 PILOT_PID=$!
+# the program died: stop the pilot too (it lands if armed), so this script never waits forever
+( while kill -0 "${pids[1]}" 2>/dev/null; do sleep 1; done
+  kill -0 "$PILOT_PID" 2>/dev/null && { echo "program exited: stopping the pilot"; kill -TERM "$PILOT_PID"; } ) &
+pids+=($!)
 wait "$PILOT_PID"; PILOT_PID=
 sleep 3

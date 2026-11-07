@@ -63,31 +63,47 @@ def quat_to_matrix(x, y, z, w):
 
 @dataclass(frozen=True)
 class OdomFrame:
-    """cuVSLAM ``odom`` (ENU, origin = startup pose on the launch mark) <-> course frame."""
+    """cuVSLAM ``odom`` (ENU) <-> course frame.
+
+    ``origin_xyz`` / ``origin_yaw`` are the odom pose of the vehicle sitting on the launch mark. They
+    default to 0 (cuVSLAM started on the mark); ``anchored_at`` measures them instead, so the frame is
+    right even if cuVSLAM kept running from elsewhere (e.g. a sim Reset world without a SLAM restart)."""
     launch_xy: tuple = (-2.515, .914)       # launch mark, course frame (m)
-    launch_heading: float = np.pi / 2       # vehicle heading at startup, course frame (rad)
-    launch_height: float = .05              # body origin above the floor at startup (m)
+    launch_heading: float = np.pi / 2       # vehicle heading on the mark, course frame (rad)
+    launch_height: float = .05              # body origin above the floor on the mark (m)
+    origin_xyz: tuple = (0.0, 0.0, 0.0)     # odom position of the vehicle on the mark
+    origin_yaw: float = 0.0                 # odom yaw of the vehicle on the mark
+
+    def anchored_at(self, position, yaw):
+        """The same frame with the vehicle's measured odom pose on the mark as its origin."""
+        from dataclasses import replace
+        return replace(self, origin_xyz=tuple(float(v) for v in position), origin_yaw=float(yaw))
+
+    @property
+    def _rot(self):                         # odom -> course rotation about z
+        return self.launch_heading - self.origin_yaw
 
     def to_course(self, p_odom):
-        p = np.asarray(p_odom, float)
-        xy = np.asarray(self.launch_xy) + _rz(self.launch_heading)[:2, :2] @ p[:2]
+        p = np.asarray(p_odom, float) - np.asarray(self.origin_xyz)
+        xy = np.asarray(self.launch_xy) + _rz(self._rot)[:2, :2] @ p[:2]
         return np.array([xy[0], xy[1], p[2] + self.launch_height])
 
     def to_odom(self, p_course):
         p = np.asarray(p_course, float)
-        xy = _rz(-self.launch_heading)[:2, :2] @ (p[:2] - np.asarray(self.launch_xy))
-        return np.array([xy[0], xy[1], p[2] - self.launch_height])
+        xy = _rz(-self._rot)[:2, :2] @ (p[:2] - np.asarray(self.launch_xy))
+        o = np.asarray(self.origin_xyz)
+        return np.array([xy[0] + o[0], xy[1] + o[1], p[2] - self.launch_height + o[2]])
 
     def yaw_to_course(self, yaw_odom):
-        return float(np.arctan2(np.sin(yaw_odom + self.launch_heading), np.cos(yaw_odom + self.launch_heading)))
+        return float(np.arctan2(np.sin(yaw_odom + self._rot), np.cos(yaw_odom + self._rot)))
 
     def yaw_to_odom(self, yaw_course):
-        return float(np.arctan2(np.sin(yaw_course - self.launch_heading), np.cos(yaw_course - self.launch_heading)))
+        return float(np.arctan2(np.sin(yaw_course - self._rot), np.cos(yaw_course - self._rot)))
 
     def odometry_to_course(self, position, quat_xyzw):
         """nav_msgs/Odometry pose -> (course xyz, course yaw, body-FLU -> course rotation)."""
         r_odom = quat_to_matrix(*quat_xyzw)
-        rotation = _rz(self.launch_heading) @ r_odom
+        rotation = _rz(self._rot) @ r_odom
         yaw = atan2(rotation[1, 0], rotation[0, 0])
         return self.to_course(position), yaw, rotation
 

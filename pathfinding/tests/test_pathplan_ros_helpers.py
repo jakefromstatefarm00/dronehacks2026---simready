@@ -83,3 +83,22 @@ def test_node_wiring_published_course_depth_to_command():
     assert cmd.mode in ("move", "turn")
     forward = CameraMount().offset[0]                     # camera sits this far ahead of the body origin
     assert planner.belief.occ[tuple(spec.to_cell([-2.515, .914 + forward + 1.2]))]   # the wall is in the map
+
+
+def test_odom_frame_anchored_at_a_non_zero_start_pose():
+    """cuVSLAM need not start on the mark (sim Reset world without a SLAM restart): anchoring at the
+    measured pose must put that pose on the launch mark, heading up the first corridor."""
+    import math
+    base = OdomFrame()
+    f = base.anchored_at((0.4, -0.3, 0.02), 0.2)
+    c = f.to_course((0.4, -0.3, 0.02))
+    assert np.allclose(c[:2], base.launch_xy) and abs(c[2] - base.launch_height) < 1e-9
+    assert abs(f.yaw_to_course(0.2) - base.launch_heading) < 1e-9
+    fwd = (0.4 + math.cos(0.2), -0.3 + math.sin(0.2), 0.02)       # 1 m along the start heading
+    d = f.to_course(fwd)[:2] - np.asarray(base.launch_xy)
+    assert np.allclose(d, [0.0, 1.0])                                 # = course +y
+    p = np.array([1.1, 0.7, 0.9])
+    assert np.allclose(f.to_odom(f.to_course(p)), p)
+    assert abs(f.yaw_to_odom(f.yaw_to_course(-1.0)) + 1.0) < 1e-9
+    _, yaw, rot = f.odometry_to_course((0.4, -0.3, 0.02), (0.0, 0.0, math.sin(0.1), math.cos(0.1)))
+    assert abs(yaw - base.launch_heading) < 1e-9 and np.allclose(rot @ [1, 0, 0], [0, 1, 0])
