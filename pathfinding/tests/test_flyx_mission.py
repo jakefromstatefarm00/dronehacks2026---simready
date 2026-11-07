@@ -156,6 +156,15 @@ def test_clock_jump_does_not_land_and_flight_limit_uses_sim_time():
     assert m.state == "LAND" and m.events[-1]["note"] == "flight time limit"
 
 
+def test_local_position_gap_with_fresh_odometry_does_not_land():
+    """Regression (FlyX run 3): local_position paused 0.69 s during takeoff, odometry fresh."""
+    m, t = airborne_mission()
+    m.tick(tel(t + 1.0, **{**AIR, "local_t": t}))                       # 1 s gap: keep flying
+    assert m.state == "NAVIGATE", m.events
+    m.tick(tel(t + 3.0, **{**AIR, "local_t": t}))                       # 3 s: estimator flags too old
+    assert m.state == "LAND" and "local_position stale" in m.events[-1]["note"]
+
+
 def test_estimator_invalid_in_flight_lands():
     m, t = airborne_mission()
     m.tick(tel(t + .05, **{**AIR, "xy_valid": False}))

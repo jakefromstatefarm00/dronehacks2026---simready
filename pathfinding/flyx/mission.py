@@ -67,7 +67,9 @@ class MissionConfig:
     max_flight_s: float = 175.0            # rule 7.9: 3-minute run limit, with margin
     pose_max_age_s: float = .3
     status_max_age_s: float = 3.0          # vehicle_status ~1.7 Hz and land_detected ~0.9 Hz in FlyX
-    local_max_age_s: float = .5            # vehicle_local_position ~44 Hz (xy/z validity flags)
+    # vehicle_local_position: only its xy/z validity flags are used (the pose comes from odometry,
+    # held to pose_max_age_s). FlyX run 3 landed in TAKEOFF on a 0.69 s gap while odometry was fresh.
+    local_max_age_s: float = 2.0
     offboard_loss_s: float = .5
     launch_xy: tuple = (-2.515, .914)      # launch mark, course frame
     launch_heading: float = float(np.pi / 2)   # vehicle heading on the mark, course frame (facing +y)

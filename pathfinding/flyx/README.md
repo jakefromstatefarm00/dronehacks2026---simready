@@ -45,7 +45,7 @@ WAIT_HEALTH  fresh odometry (NED), status, local position xy/z valid, landed + d
   -> Offboard -> arm -> TAKEOFF to 0.9 m -> NAVIGATE (Theta* replanning, carrot 0.5 m ahead)
   -> LAND (PX4 native) at the pad -> DONE when landed + disarmed
 ```
-Lands on: odometry > 0.3 s old, local position > 0.5 s, vehicle_status > 3 s, estimator
+Lands on: odometry > 0.3 s old, local position (validity flags) > 2 s, vehicle_status > 3 s, estimator
 invalid, planner failure, 175 s of sim time, Ctrl-C/SIGTERM. If PX4 leaves Offboard itself
 (failsafe, RC) it stops commanding (TAKEN_OVER).
 
