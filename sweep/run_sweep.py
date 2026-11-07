@@ -45,7 +45,7 @@ RANGES = {
     "pad_centre_m": (.05, .15),
 }
 FIELDS = ["config", "level", "seed", "outcome", "why", "course_s", "checkpoints", "cleared", "min_wall", "min_net",
-          "net_touches", "touches", "min_clear", "p5_clear", "contact_xy", "pad_err", "vio_events", "vio_losses", "fast_yaw_s",
+          "net_touches", "touches", "min_clear", "p5_clear", "contact_xy", "pad_err", "vio_events", "vio_losses", "fast_yaw_s", "fast_yaw_moving_s",
           "inplace_turn_s", "stall_s", "path_m", "escapes", "lookarounds", "planner_events", "plan_steps", "replans",
           "wall_s"]
 

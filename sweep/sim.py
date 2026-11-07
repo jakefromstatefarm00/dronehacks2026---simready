@@ -86,6 +86,9 @@ class Level:
     # depth frame registered with the odometry this many 50 ms ticks older than the image
     # (pose_at matches stamps to within 0.05 s; residual stamp error and odometry delay remain)
     depth_lag: tuple = (0, 0)
+    # "yawrate": hazard from yaw rate alone (+ turning in place); "yawspeed": hazard from yaw rate
+    # above 0.35 rad/s times speed (the calibrated finding: divergence only when yawing fast while moving)
+    vio_model: str = "yawrate"
     # real-time factor: physics seconds per program (wall) second. The drone is 1.0; the FlyX lab
     # runs ~0.8 while the program, its 5 Hz planner, yaw cap and stalls run on the wall clock.
     rtf: float = 1.0
@@ -130,6 +133,29 @@ LEVELS = {
                          vel_noise=(.03, .08), drift_per_sqrt_m=(.01, .03), drift_rate=(.001, .004),
                          yaw_drift_rate=(.005, .015), disturbance=(.1, .35))),
 }
+
+# ---- calibrated to 15 real PX4 SITL ulogs (branch dynamics-calib 4964e62,
+# team_ws/src/team_mission/config/dynamics_calibrated.yaml): Kp 0.952, tau 0.83 s (runs 0.45-0.97),
+# vel_i 0.66, delay ~0, k_yaw 4.04, yaw_tau 0.109 s, max yaw rate 1.41. VIO divergence (4 of 15 runs)
+# came from yaw rate 0.46-0.80 rad/s WHILE MOVING 0.41-0.53 m/s at the first 90 deg corner, so the
+# calibrated levels use the yaw-rate x speed hazard (vio_model "yawspeed").
+CAL_POINT = _dyn(kp_xy=(.952, .952), tau=(.83, .83), vel_i=(.66, .66), delay_steps=(0, 0), k_yaw=(4.04, 4.04),
+                 yaw_tau=(.109, .109), max_yaw_rate=(1.41, 1.41))
+CAL_RANGES = dict(kp_xy=(.8, 1.25), kp_z=(.85, 1.15), tau=(.3713, 1.0477), vel_i=(0., .9956), max_accel=(1., 3.),
+                  px4_max_speed=(1., 2.), k_yaw=(2.6292, 5.4606), max_yaw_rate=(.6, 1.62), yaw_tau=(.0558, .1739),
+                  delay_steps=(0, 6), pos_noise=(.002, .02), vel_noise=(.01, .06), drift_per_sqrt_m=(0., .0541),
+                  drift_rate=(0., .0247), yaw_drift_rate=(0., .01), disturbance=(0., .25), disturbance_tau=(.5, 3.))
+LEVELS.update({
+    # Gazebo-like: published course, fitted point dynamics, ideal estimate, yaw x speed VIO hazard
+    "C0": Level("C0", dyn=CAL_POINT, vio_scale=1.0, vio_model="yawspeed"),
+    # the full calibrated ranges + what FlyX measured (stalls, pauses), walls +-10 cm, 1-2 poles
+    "C2": Level("C2", wall_shift=.10, clutter=(1, 2), depth_noise=.006, depth_lag=(0, 1), stall_rate=.63,
+                stall_long_p=.03, pause_every_s=25, vio_scale=1.0, vio_model="yawspeed", dyn=dict(CAL_RANGES)),
+    # heavier world on the calibrated ranges
+    "C3": Level("C3", wall_shift=.15, clutter=(1, 3), depth_noise=.01, depth_lag=(1, 2), stall_rate=.8,
+                stall_long_p=.05, stall_max=2.5, pause_every_s=12, pause_s=(.3, 2.0), vio_scale=1.5,
+                vio_model="yawspeed", jump_m=.15, dyn=dict(CAL_RANGES)),
+})
 
 
 # ------------------------------------------------------------------------- the world
@@ -410,7 +436,7 @@ def run(knobs, level_name, seed, *, cache_dir=None, t_max=185.0, trace=False, le
     clears, stall_time = [], 0.0
     min_clear, contact_xy, touches, in_wall = np.inf, None, 0, False
     min_net, net_touches, in_net = np.inf, 0, False
-    vio_events, vio_losses, fast_yaw_s, inplace_turn_s = 0, 0, 0.0, 0.0
+    vio_events, vio_losses, fast_yaw_s, inplace_turn_s, fast_yaw_moving_s = 0, 0, 0.0, 0.0, 0.0
     max_track_err, track_err = 0.0, []
     path_len, last_true = 0.0, sim.p[:2].copy()
     trace_rows = []
@@ -480,14 +506,20 @@ def run(knobs, level_name, seed, *, cache_dir=None, t_max=185.0, trace=False, le
         omega, speed = abs(sim.yaw_rate), float(np.linalg.norm(sim.v[:2]))
         if omega > .35:
             fast_yaw_s += DT
+            if speed > .3:
+                fast_yaw_moving_s += DT
         inplace = speed < .1 and omega > .1
         if inplace:
             inplace_turn_s += DT
         # VIO hazard (per second): fast turns dominate (30/40 losses > 0.35 rad/s); turning in place
         # after a stop also lost it; a small floor for everything else
         if level.vio_scale > 0:
-            fast = min(max((omega - .30) / .10, 0.0), 1.0)
-            hz = level.vio_scale * (.001 + .20 * fast + (.012 if inplace else 0.0))
+            if level.vio_model == "yawspeed":
+                # 0.47/s at 0.6 rad/s and 0.47 m/s: ~50 % over a 1.5 s corner (4 of 15 runs diverged)
+                hz = level.vio_scale * (.0005 + 2.0 * max(omega - .35, 0.0) * speed / .5)
+            else:
+                fast = min(max((omega - .30) / .10, 0.0), 1.0)
+                hz = level.vio_scale * (.001 + .20 * fast + (.012 if inplace else 0.0))
             if r_vio.random() < hz * DT:
                 vio_events += 1
                 sim.bias[:2] += r_vio.normal(0, level.jump_m, 2)
@@ -515,7 +547,7 @@ def run(knobs, level_name, seed, *, cache_dir=None, t_max=185.0, trace=False, le
                min_wall=round(float(min_clear), 4), min_net=round(float(min_net), 4), net_touches=net_touches,
                min_clear=round(float(min(min_clear, min_net)), 4), p5_clear=round(float(np.percentile(cl, 5)), 4),
                touches=touches, contact_xy=contact_xy, pad_err=round(float(np.linalg.norm(sim.p[:2] - pad)), 3),
-               vio_events=vio_events, vio_losses=vio_losses, fast_yaw_s=round(fast_yaw_s, 2),
+               vio_events=vio_events, vio_losses=vio_losses, fast_yaw_s=round(fast_yaw_s, 2), fast_yaw_moving_s=round(fast_yaw_moving_s, 2),
                inplace_turn_s=round(inplace_turn_s, 2), stall_s=round(stall_time, 2),
                path_m=round(path_len, 2), escapes=sum(e.get("event") == "escape" for e in planner.events),
                lookarounds=sum(e.get("event") == "look around" for e in planner.events),

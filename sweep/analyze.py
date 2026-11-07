@@ -58,6 +58,7 @@ def summarise(rows):
             vio_events=float(np.mean([r["vio_events"] for r in rs])),
             vio_losses=float(np.mean([r["vio_losses"] for r in rs])),
             fast_yaw_s=float(np.mean([r["fast_yaw_s"] for r in rs])),
+            fast_yaw_moving_s=float(np.mean([float(r.get("fast_yaw_moving_s") or 0) for r in rs])),
             inplace_s=float(np.mean([r["inplace_turn_s"] for r in rs])),
             checkpoints=float(np.mean([r["checkpoints"] for r in rs])),
             escapes=float(np.mean([r["escapes"] for r in rs])),
@@ -75,7 +76,7 @@ def summarise(rows):
 
 COLS = ["n", "completion", "clean", "t_mean", "t_p90", "min_wall", "min_wall_p5", "p5_clear", "crashes", "touch_runs",
         "net_touch_runs",
-        "vio_events", "fast_yaw_s", "inplace_s", "checkpoints", "escapes", "landed_early", "timeouts", "errors"]
+        "vio_events", "fast_yaw_s", "fast_yaw_moving_s", "inplace_s", "checkpoints", "escapes", "landed_early", "timeouts", "errors"]
 
 
 def table(summary, configs=None, levels=None):
