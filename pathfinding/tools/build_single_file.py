@@ -23,7 +23,7 @@ ROOT = Path(__file__).resolve().parents[1]          # pathfinding/
 SKYBETA_NODE = ROOT / "ros2/dronehacks_pathplan/dronehacks_pathplan/pathplan_mission.py"
 NATIVE_NODE = ROOT / "flyx/fly_pathplan.py"
 # dependency order (each module's relative imports must already be loaded)
-PATHPLAN = ["grid_search", "world", "belief", "depth_projection", "online", "ros_node"]
+PATHPLAN = ["grid_search", "world", "belief", "depth_projection", "online", "ros_node", "planner_process"]
 FLYX = ["px4_link", "mission"]
 LAB_DEPTH_TOPIC = "/camera/depth/image_raw"          # FlyX lab, from check_lab (16UC1 640x400)
 
@@ -129,14 +129,12 @@ def split_doc(text):
 
 def build_skybeta(altitude, prior, cps, commit):
     node = replace(SKYBETA_NODE.read_text(encoding="utf-8"),
-                   """        sys.path.insert(0, _find_pathfinding(g('pathfinding_path')))
-        from pathplan.depth_projection import CameraMount
-        from pathplan.ros_node import OdomFrame, build_planner
-""", """        _install_embedded()                    # embedded planner (see the end of this file)
-        from pathplan.depth_projection import CameraMount
-        from pathplan.ros_node import OdomFrame
-        build_planner = _build_planner_embedded
-""", "pathplan_mission.py")
+                   """    sys.path.insert(0, _find_pathfinding(''))
+    from pathplan.planner_process import PlannerProcess
+    from pathplan.ros_node import build_planner
+    planner = PlannerProcess(build_planner)""", """    _install_embedded()                        # embedded planner (see the end of this file)
+    from pathplan.planner_process import PlannerProcess
+    planner = PlannerProcess(_build_planner_embedded)""", "pathplan_mission.py")
     doc, code = split_doc(node)
     code = replace(code, "\n\nif __name__ == '__main__':\n    main()\n", "\n", "pathplan_mission.py main guard")
     head = ('"""Single-file skybeta node: our online path planner behind the skybeta interface.\n\n'

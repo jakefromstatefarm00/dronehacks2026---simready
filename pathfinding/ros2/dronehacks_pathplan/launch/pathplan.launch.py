@@ -60,6 +60,8 @@ def generate_launch_description():
         condition=IfCondition(LaunchConfiguration('competitor')),
         parameters=[{k: LaunchConfiguration(k) for k in (
             'flight_altitude_m', 'carrot_m', 'planner', 'depth_topic', 'camera_info_topic',
-            'shadow', 'pathfinding_path', 'min_altitude_m')}],
+            'shadow', 'min_altitude_m')}],
+        # read before the node starts (it forks the planner process first): not a ROS parameter
+        additional_env={'DRONEHACKS_PATHFINDING': LaunchConfiguration('pathfinding_path')},
     )
     return LaunchDescription(declared + [flight_interface, competitor])

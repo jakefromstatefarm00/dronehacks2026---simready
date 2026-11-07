@@ -16,23 +16,31 @@ Mission (10 Hz state machine; the planner runs on its own thread):
     WAIT_FOR_OFFBOARD  command the current position (this stream lets Offboard start)
     TAKEOFF            climb straight up to ``flight_altitude_m`` above the floor
     NAVIGATE           pathplan.OnlinePlanner through the five checkpoints: a carrot
-                       ``carrot_m`` ahead on the plan, facing the look-ahead point
-    HOLD               over the landing pad at the envelope floor (there is no land command:
-                       the pilot / sim operator lands)
+                       ``carrot_m`` ahead on the plan, facing the look-ahead point; the commanded
+                       heading turns at most ``yaw_rate_max_rad_s`` (VIO is lost on fast turns)
+    HOLD               centre over the landing pad to ``pad_centre_m``, then descend to the envelope
+                       floor (there is no land command: the pilot / sim operator lands)
     PAUSED             Offboard lost: hold here, stop advancing (as the template does)
+
+The planner and depth projection run in a separate low-priority process (pathplan.planner_process,
+as in flyx/): sharing this process's GIL they stalled the odometry callbacks.  Depth frames are
+placed with the odometry nearest their capture time, and dropped while turning faster than 0.5 rad/s.
 
 Frames: ``odom`` is cuVSLAM's ENU frame whose origin and axes are the vehicle's pose when SLAM
 started.  The drone must start ON THE LAUNCH MARK facing up the first corridor (course +y);
 ``launch_xy_m`` / ``launch_heading_course_rad`` describe that, and turn odom into the course
 frame of the published map the planner uses.
 """
+from collections import deque
 import json
 import math
 import os
 from pathlib import Path
 import sys
 import threading
+import time
 
+import numpy as np
 import rclpy
 from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
 from rclpy.executors import ExternalShutdownException, MultiThreadedExecutor
@@ -44,29 +52,38 @@ from nav_msgs.msg import Odometry, Path as PathMsg
 from sensor_msgs.msg import CameraInfo, Image
 from std_msgs.msg import String
 
+PLAN_ABOVE_M = 0.5          # no mapping/planning below this: on the ground the camera sits 5 cm up
+ODOM_PAUSE_S = 0.3          # odometry older than this: hold the last setpoint (cuVSLAM pauses ~0.7 s)
+PAD_CENTRE_TIMEOUT_S = 8.0  # give up centring over the pad after this and descend anyway
+
 
 def _find_pathfinding(hint):
-    """The repo's pathfinding/ folder (pathplan + published course): parameter, env, or this file's checkout."""
+    """The repo's pathfinding/ folder (pathplan + published course): env, or this file's checkout."""
     candidates = [hint, os.environ.get('DRONEHACKS_PATHFINDING', '')]
     here = Path(os.path.realpath(__file__))
     candidates += [str(p) for p in here.parents] + [str(p / 'pathfinding') for p in here.parents]
     for c in candidates:
         if c and (Path(c) / 'pathplan' / 'online.py').exists():
             return str(Path(c).resolve())
-    raise RuntimeError('cannot find pathfinding/pathplan: set the pathfinding_path parameter or '
-                       'DRONEHACKS_PATHFINDING to <repo>/pathfinding')
+    raise RuntimeError('cannot find pathfinding/pathplan: set DRONEHACKS_PATHFINDING (the launch '
+                       'argument pathfinding_path does) to <repo>/pathfinding')
+
+
+def _wrap(a):
+    return math.atan2(math.sin(a), math.cos(a))
 
 
 class PathplanMission(Node):
-    def __init__(self, **kwargs):
+    def __init__(self, planner, **kwargs):
         super().__init__('dronehacks_pathplan', **kwargs)
         p = self.declare_parameter
-        p('pathfinding_path', '')
         p('flight_altitude_m', 0.9)            # above the floor; walls are 1.73 m (rule 7.7)
         p('arrival_radius_m', 0.15)            # takeoff: how close to the climb target counts
         p('publish_rate_hz', 10.0)
         p('plan_rate_hz', 5.0)
         p('carrot_m', 0.5)                     # pose setpoints are not speed-limited: keep it short
+        p('yaw_rate_max_rad_s', 0.25)          # cap on the commanded heading's rate (VIO loss on fast turns)
+        p('pad_centre_m', 0.08)                # centre over the pad to this before descending
         p('planner', 'theta')                  # theta | astar | static (published map only)
         p('depth_topic', '')                   # '' = no sensing: published map only
         p('camera_info_topic', '')             # default: <depth_topic parent>/camera_info
@@ -80,22 +97,24 @@ class PathplanMission(Node):
         p('min_altitude_m', 0.3)               # flight_interface's floor above the odom origin (hold height)
         g = lambda name: self.get_parameter(name).value
 
-        sys.path.insert(0, _find_pathfinding(g('pathfinding_path')))
         from pathplan.depth_projection import CameraMount
-        from pathplan.ros_node import OdomFrame, build_planner
+        from pathplan.ros_node import OdomFrame
 
         self.altitude = float(g('flight_altitude_m'))
         self.arrival_radius = float(g('arrival_radius_m'))
         self.carrot = float(g('carrot_m'))
+        self.yaw_rate_max = float(g('yaw_rate_max_rad_s'))
+        self.pad_centre = float(g('pad_centre_m'))
         self.timeout = float(g('navigate_timeout_s'))
         self.shadow = bool(g('shadow'))
         self.min_altitude = float(g('min_altitude_m'))
         self.frame = OdomFrame(tuple(g('launch_xy_m')), float(g('launch_heading_course_rad')),
                                float(g('launch_height_m')))
-        self.mount = CameraMount(offset=tuple(g('camera_offset_flu_m')),
-                                 pitch_down_deg=float(g('camera_pitch_down_deg')))
-        self.get_logger().info('building the course map from the published layout...')
-        self.planner, self.spec, self.env, self.prior = build_planner(g('planner'), self.altitude)
+        self.get_logger().info('building the course map from the published layout (planner process)...')
+        self.planner = planner
+        planner.configure(g('planner'), self.altitude, tuple(g('camera_offset_flu_m')),
+                          float(g('camera_pitch_down_deg')), self.carrot)
+        self.pad_xy = np.asarray(planner.pad_xy, float)
 
         # --- the contract ----------------------------------------------
         self.setpoint_pub = self.create_publisher(PoseStamped, '/skybeta/setpoint/pose', 10)
@@ -117,14 +136,24 @@ class PathplanMission(Node):
         self.state = 'WAIT_FOR_OFFBOARD'
         self.position = None               # ENU odom
         self.pose_course = None            # (course xyz, course yaw, body->course rotation)
+        self.odom_t = None                 # monotonic arrival of the latest odometry
+        self.poses = deque(maxlen=300)     # (stamp s, ENU position, ENU quaternion xyzw): ~3 s of odometry
+        self.poses_lock = threading.Lock() # odometry thread appends, depth thread reads
         self.start = None
         self.offboard_active = False
         self.was_offboard = False
         self.navigate_started_at = None
         self.target = None                 # (course xy, course yaw) from the planner thread
         self.plan_mode = 'none'
-        self.intr = None
-        self.lock = threading.Lock()       # planner: depth observe() vs update()
+        self.turn_xy = None                # where a look-around began: held there while it turns
+        self.last_sp = None                # last NAVIGATE setpoint (course xy, yaw): held while odometry pauses
+        self.sp_yaw = None                 # last commanded course yaw (rate limiter state)
+        self.sp_yaw_t = None
+        self.hold_here = False
+        self.pad_since = None
+        self.pad_centred = False
+        self.intr = None                   # CameraInfo K
+        self.depth_stats = {'frames': 0, 'matched': 0, 'fallback': 0, 'turning': 0}
         self.log_once = set()
 
         self.create_timer(1.0 / float(g('publish_rate_hz')), self.tick, callback_group=control)
@@ -137,8 +166,13 @@ class PathplanMission(Node):
     # ------------------------------------------------------------------ inputs
     def odometry_cb(self, msg):
         p, q = msg.pose.pose.position, msg.pose.pose.orientation
-        self.position = (float(p.x), float(p.y), float(p.z))
-        self.pose_course = self.frame.odometry_to_course(self.position, (q.x, q.y, q.z, q.w))
+        position, quat = (float(p.x), float(p.y), float(p.z)), (q.x, q.y, q.z, q.w)
+        stamp = msg.header.stamp.sec + msg.header.stamp.nanosec * 1e-9
+        with self.poses_lock:
+            self.poses.append((stamp, position, quat))
+        self.odom_t = time.monotonic()         # before position/pose: the control thread reads them in this order
+        self.pose_course = self.frame.odometry_to_course(position, quat)
+        self.position = position
 
     def state_cb(self, msg):
         try:
@@ -153,22 +187,50 @@ class PathplanMission(Node):
 
     def info_cb(self, msg):
         if self.intr is None:
-            from pathplan.depth_projection import Intrinsics
-            self.intr = Intrinsics.from_k(msg.k, msg.width, msg.height)
-            self.get_logger().info(f'depth camera: {msg.width}x{msg.height}, fx {self.intr.fx:.1f}')
+            self.intr = list(msg.k)
+            self.get_logger().info(f'depth camera: {msg.width}x{msg.height}, fx {msg.k[0]:.1f}')
+
+    def pose_at(self, stamp):
+        """(course pose when the image was taken, yaw rate then): the odometry nearest its header
+        stamp. Projecting with the latest pose smears walls during turns (FlyX run 4: it sealed
+        the bend after checkpoint 1)."""
+        with self.poses_lock:
+            poses = list(self.poses)
+        if stamp > 0 and poses:
+            t, pos, q = min(poses, key=lambda s: abs(s[0] - stamp))
+            if abs(t - stamp) <= .05:
+                self.depth_stats['matched'] += 1
+                t0, pos0, q0 = min(poses, key=lambda s: abs(s[0] - (stamp - .15)))
+                pose = self.frame.odometry_to_course(pos, q)
+                dyaw = _wrap(pose[1] - self.frame.odometry_to_course(pos0, q0)[1])
+                return pose, abs(dyaw) / max(t - t0, .05)
+        self.depth_stats['fallback'] += 1          # unstamped / other clock: the latest pose
+        return self.pose_course, 0.0
 
     def depth_cb(self, msg):
-        pose = self.pose_course
-        if pose is None or self.intr is None:
+        if self.intr is None or not self.planning_allowed():
             return
-        from pathplan.depth_projection import decode_depth_image, project_depth
-        depth = decode_depth_image(msg.data, msg.width, msg.height, msg.encoding, msg.step)
+        from pathplan.planner_process import MAX_TURN_RATE
+        pose, rate = self.pose_at(msg.header.stamp.sec + msg.header.stamp.nanosec * 1e-9)
+        if pose is None:
+            return
+        self.depth_stats['frames'] += 1
+        if rate > MAX_TURN_RATE:                   # pose error while turning: skip the frame
+            self.depth_stats['turning'] += 1
+            return
         xyz, _, rotation = pose
-        cells = project_depth(depth, self.intr, xyz, rotation, self.spec, altitude=self.altitude,
-                              half_height=self.env.half_height + self.env.tracking_margin,
-                              mount=self.mount, expected=self.prior)
-        with self.lock:
-            self.planner.observe(*cells)
+        # the planner process takes the latest frame at its next step (<= plan_rate_hz)
+        self.planner.give_frame((bytes(msg.data), msg.width, msg.height, msg.encoding, msg.step, self.intr,
+                                 xyz, rotation))
+
+    def planning_allowed(self):
+        """Map and plan only in flight (or in shadow): on the ground each "look around" call
+        spent turning budget the vehicle never used."""
+        if self.pose_course is None:
+            return False
+        if self.shadow or self.state == 'NAVIGATE':
+            return True
+        return self.state == 'TAKEOFF' and self.pose_course[0][2] > PLAN_ABOVE_M
 
     def info_once(self, key, message):
         if key not in self.log_once:
@@ -195,17 +257,36 @@ class PathplanMission(Node):
         o = self.frame.to_odom((xy[0], xy[1], self.altitude if altitude is None else altitude))
         self.send(o[0], o[1], o[2], self.frame.yaw_to_odom(yaw_course))
 
+    def limit_yaw(self, yaw):
+        """Rate-limit the commanded course heading to yaw_rate_max_rad_s (starts from the vehicle's yaw).
+        cuVSLAM loses tracking on fast turns: 30 of 40 losses in Suraj's flyx_course runs were above
+        0.35 rad/s, 3/3 Gazebo completions at 0.25."""
+        now = time.monotonic()
+        if self.sp_yaw is None:
+            self.sp_yaw, self.sp_yaw_t = self.pose_course[1], now
+        step = self.yaw_rate_max * max(0.0, min(now - self.sp_yaw_t, .2))
+        self.sp_yaw = _wrap(self.sp_yaw + float(np.clip(_wrap(yaw - self.sp_yaw), -step, step)))
+        self.sp_yaw_t = now
+        return self.sp_yaw
+
     # ------------------------------------------------------------------ planner thread
     def plan_tick(self):
-        if self.pose_course is None or self.state in ('HOLD', 'PAUSED'):
+        if not self.planning_allowed():
             return
         from pathplan.ros_node import target_from_command
         xyz, yaw, _ = self.pose_course
-        with self.lock:
-            cmd = self.planner.update(xyz[:2], yaw)
-        self.target = target_from_command(cmd, xyz[:2], yaw, self.carrot)
-        self.plan_mode = cmd.mode
-        if cmd.path is not None:
+        cmd = self.planner.update(xyz[:2], yaw)    # blocks this thread only, not the odometry callbacks
+        target = target_from_command(cmd, xyz[:2], yaw, self.carrot)
+        if cmd.mode == 'turn':
+            # hold the spot where the turning began: re-holding "here" every step let the vehicle
+            # drift 11 cm during a look-around in FlyX run 6, toward a wall
+            if self.turn_xy is None:
+                self.turn_xy = np.asarray(xyz[:2], float).copy()
+            target = (self.turn_xy, target[1])
+        else:
+            self.turn_xy = None
+        self.target, self.plan_mode = target, cmd.mode
+        if cmd.path is not None:                   # [here, carrot]: the planner process shortens the plan
             out = PathMsg()
             out.header.frame_id = 'odom'
             out.header.stamp = self.get_clock().now().to_msg()
@@ -233,8 +314,8 @@ class PathplanMission(Node):
         getattr(self, f'_state_{self.state.lower()}')()
         self.status_pub.publish(String(data=json.dumps({
             'state': self.state, 'planner': self.plan_mode,
-            'next': getattr(self.planner.checkpoint, 'name', None),
-            'cleared': [c['name'] for c in self.planner.cleared], 'offboard_active': self.offboard_active})))
+            'cleared': [c['name'] for c in self.planner.cleared], 'offboard_active': self.offboard_active,
+            'depth': self.depth_stats, 'depth_quality': self.planner.depth_quality})))
 
     def _state_wait_for_offboard(self):
         if not self.offboard_active:
@@ -258,7 +339,7 @@ class PathplanMission(Node):
     def _state_navigate(self):
         if self.plan_mode == 'done':
             self.state = 'HOLD'
-            self.get_logger().info('landing pad reached -- holding low over it; the pilot / operator lands.')
+            self.get_logger().info('landing pad reached -- centring over it; the pilot / operator lands.')
             return
         if self.plan_mode == 'failed' or self.now_s() - self.navigate_started_at > self.timeout:
             why = 'planner failed: ' + (self.planner.events[-1]['event'] if self.planner.events else '?') \
@@ -267,22 +348,39 @@ class PathplanMission(Node):
             self.state = 'HOLD'
             self.hold_here = True
             return
+        if time.monotonic() - self.odom_t > ODOM_PAUSE_S and self.last_sp is not None:
+            # cuVSLAM pauses odometry for up to ~0.7 s: keep sending the last setpoint (the flight
+            # interface keeps flying on its own estimate) rather than steering on a stale pose
+            self.info_once('odom_pause', 'odometry paused: holding the last setpoint')
+            self.send_course(*self.last_sp)
+            return
         if self.target is None:                # first plan not in yet: hold at altitude
             xyz, yaw, _ = self.pose_course
-            self.send_course(xyz[:2], yaw)
-            return
-        self.send_course(*self.target)
+            xy, face = xyz[:2], yaw
+        else:
+            xy, face = self.target
+        self.last_sp = (xy, self.limit_yaw(face))
+        self.send_course(*self.last_sp)
 
     def _state_hold(self):
-        if getattr(self, 'hold_here', False) or self.planner.checkpoint is not None:
-            xyz, yaw, _ = self.pose_course
+        xyz, yaw, _ = self.pose_course
+        if self.hold_here:
             self.send_course(xyz[:2], yaw)
             return
-        # over the pad, exactly at flight_interface's floor (min_altitude_m above the odom origin),
-        # so the setpoint is not clamped (and logged) every cycle
-        pad = self.planner.checkpoints[-1].centre
+        # centre over the pad at cruise height first (landing where "reached" fired put the drone
+        # 0.25 m off centre in Gazebo), then go to flight_interface's floor (min_altitude_m above
+        # the odom origin) so the setpoint is not clamped (and logged) every cycle
+        now = time.monotonic()
+        self.pad_since = self.pad_since if self.pad_since is not None else now
+        off = float(np.hypot(*(np.asarray(xyz[:2]) - self.pad_xy)))
+        if not self.pad_centred and (off <= self.pad_centre or now - self.pad_since > PAD_CENTRE_TIMEOUT_S):
+            self.pad_centred = True
+            self.get_logger().info(f'over the pad ({off:.2f} m from its centre) -- descending to the floor.')
+        if not self.pad_centred:
+            self.send_course(self.pad_xy, yaw)
+            return
         floor = self.frame.to_course((0.0, 0.0, self.min_altitude))[2]
-        self.send_course(pad, self.pose_course[1], altitude=floor)
+        self.send_course(self.pad_xy, yaw, altitude=floor)
 
     def _state_paused(self):
         self.send(*self.paused_at)
@@ -290,10 +388,32 @@ class PathplanMission(Node):
     def now_s(self):
         return self.get_clock().now().nanoseconds * 1e-9
 
+    def summary(self):
+        """What happened, for the terminal after the run."""
+        q = self.planner.depth_quality or {}
+        lines = ['', '=' * 72, f'RESULT: {self.state} (planner {self.plan_mode})',
+                 f'checkpoints cleared: {", ".join(c["name"] for c in self.planner.cleared) or "none"}'
+                 f'  ({len(self.planner.cleared)}/5)']
+        if q.get('hits'):
+            lines.append(f'depth: {self.depth_stats["frames"]} frames ({self.depth_stats["turning"]} dropped '
+                         f'turning); {q["hits_on_published_walls"] / q["hits"]:.0%} of hits on published walls '
+                         f'(low = wrong camera mount); new obstacles {q["hits_new_confirmed"]}')
+        elif self.depth_stats['frames'] == 0:
+            lines.append('depth: no frames used (check depth_topic / camera_info_topic)')
+        if self.planner.events:
+            lines.append('planner events (last 5):')
+            lines += [f'  {e}' for e in self.planner.events[-5:]]
+        lines.append('=' * 72)
+        print('\n'.join(lines), flush=True)
+
 
 def main(args=None):
+    sys.path.insert(0, _find_pathfinding(''))
+    from pathplan.planner_process import PlannerProcess
+    from pathplan.ros_node import build_planner
+    planner = PlannerProcess(build_planner)    # first: it forks, which is only safe before ROS threads exist
     rclpy.init(args=args)
-    node = PathplanMission()
+    node = PathplanMission(planner)
     executor = MultiThreadedExecutor(num_threads=4)
     executor.add_node(node)
     try:
@@ -304,7 +424,9 @@ def main(args=None):
         if rclpy.ok():
             raise
     finally:
+        node.summary()
         executor.shutdown()
+        planner.close()
         node.destroy_node()
         rclpy.try_shutdown()
 

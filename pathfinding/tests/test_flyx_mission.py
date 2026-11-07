@@ -307,7 +307,7 @@ def test_mode_change_by_someone_else_hands_over_quickly():
 def test_carrot_is_pulled_in_at_corners():
     """PX4 flies straight at the setpoint: round a corner the 0.5 m carrot's chord must not
     cross the keep-out."""
-    from flyx.fly_pathplan import safe_carrot_path
+    from pathplan.planner_process import safe_carrot_path
     from pathplan.world import GridSpec
     spec = GridSpec(half_size=1.5, resolution=.05)
     cost = np.ones((spec.n, spec.n))

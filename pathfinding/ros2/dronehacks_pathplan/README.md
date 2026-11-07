@@ -8,14 +8,26 @@ from `pathfinding/pathplan` (13/13 perturbed courses offline; see `pathfinding/R
 ```
 WAIT_FOR_OFFBOARD  send the current position (lets flight_interface enter Offboard)
 TAKEOFF            straight up to flight_altitude_m (0.9 m above the floor)
-NAVIGATE           planner through the 5 checkpoints; carrot 0.5 m ahead, look-ahead yaw
-HOLD               over the landing pad at the envelope floor (no land command exists: operator lands)
+NAVIGATE           planner through the 5 checkpoints; carrot 0.5 m ahead, look-ahead yaw (rate-capped)
+HOLD               centre over the pad to 8 cm, then the envelope floor (no land command exists: operator lands)
 PAUSED             Offboard lost: hold, stop advancing
 ```
 
-**Tested:** `colcon build` + `ros2 run` on ROS 2 Jazzy against a fake flight interface
+**Kept in step with `flyx/`** (the FlyX-lab program, see `../../flyx/README.md` for the runs behind each):
+the planner + depth projection run in a separate low-priority process (`pathplan/planner_process.py`,
+shared with `flyx/`: sharing the GIL stalled odometry); depth is placed with the pose at capture time, frames
+taken while turning faster than 0.5 rad/s are dropped, depth that a slightly wrong pose invents is filtered,
+and a new obstacle must be seen in 2 of ~3 frames; no mapping below 0.5 m; the carrot is pulled in so the
+straight line to it stays out of the keep-out; a look-around holds the spot where it began; the commanded heading
+turns at most `yaw_rate_max_rad_s` (0.25 rad/s: visual-odometry loss on fast turns); odometry older than 0.3 s
+holds the last setpoint; the pad is centred (`pad_centre_m`) before descending. A run ends with a terminal summary.
+`~/path` is now just `[here, carrot]` (the process shortens the plan to the safe carrot).
+Not applicable here: takeoff/arm/land, PX4 freshness and failsafe guards (`flight_interface` owns them).
+
+**Tested (before the `flyx/` sync below):** `colcon build` + `ros2 run` on ROS 2 Jazzy against a fake flight interface
 (`test/fake_skybeta.py`): waited for Offboard → took off to 0.9 m → all 5 checkpoints →
-held 0.00 m from the pad centre. **Not yet run in FlyX** (real dynamics, cuVSLAM, depth).
+held 0.00 m from the pad centre. The sync only has the shared planner process smoke-tested (no ROS in the
+editing environment): **re-run the fake-skybeta test before flying it.** **Not yet run in FlyX** (real dynamics, cuVSLAM, depth).
 
 ## Run it in FlyX / on the drone
 
@@ -47,7 +59,7 @@ running container (competitor guide §5).
 | `carrot_m` | `0.5` | pose setpoints are not speed-limited: a short carrot keeps it slow |
 | `planner` | `theta` | `astar`, or `static` (no sensing, baseline) |
 | `shadow` | `false` | `true` = plan only |
-| `pathfinding_path` | auto | `<repo>/pathfinding` if not found from the checkout |
+| `pathfinding_path` | auto | `<repo>/pathfinding` if not found from the checkout (set as `DRONEHACKS_PATHFINDING`) |
 | flight_interface args | as `competitor.launch.py` | `max_altitude_m`, `min_altitude_m`, `allow_mode_request` (SIM ONLY), ... |
 
 ## Must be true / check first

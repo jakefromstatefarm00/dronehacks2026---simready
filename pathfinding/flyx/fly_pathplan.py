@@ -20,7 +20,6 @@ import argparse
 from collections import deque
 import json
 import math
-import os
 import queue
 import signal
 from pathlib import Path
@@ -35,12 +34,8 @@ sys.path.insert(0, str(ROOT))
 
 from flyx.mission import Mission, MissionConfig, Telemetry      # noqa: E402
 from flyx.px4_link import NAN3, find_topic, odom_to_course, yaw_from_q_ned  # noqa: E402
+from pathplan.planner_process import MAX_TURN_RATE, PlannerProcess      # noqa: E402
 
-WALL_SNAP_M = .25       # depth returns this close to a published wall are that wall (pose error,
-                        # stereo noise): FlyX run 6 lost the tight passage past maze wall M1 to them
-HIT_CONFIRM = 3         # vote threshold for a new obstacle cell: +2 per frame that hits it, -1 per
-                        # frame, so it must be seen in 2 of ~3 frames (single noisy frames are ignored)
-MAX_TURN_RATE = .5      # rad/s: depth frames taken while turning faster are dropped (pose error)
 
 OUT_TOPICS = {                      # basename -> px4_msgs type (discovered with optional _vN suffix)
     "odom": ("vehicle_odometry", "VehicleOdometry"),
@@ -70,118 +65,6 @@ def parse_args(argv=None):
                     help="use the system clock instead of /clock (only for tests without a simulator)")
     return ap.parse_args(argv)
 
-
-def safe_carrot_path(cost, spec, xy, path, carrot_m):
-    """[xy, setpoint]: the point carrot_m along the plan, pulled in until the straight line to
-    it stays out of the keep-out. PX4 flies straight at the setpoint, so a far carrot round a
-    bend cuts the corner into the wall (fake-PX4 runs: "escape" 18 cm from the net)."""
-    from pathplan.grid_search import line_cost
-    from pathplan.online import _point_along
-    cell = lambda p: np.clip((np.asarray(p)[::-1] + spec.half_size) / spec.resolution - .5, 0, cost.shape[0] - 1)
-    for d in (carrot_m, .35, .25, .15):
-        target = _point_along(path, d)
-        if np.isfinite(line_cost(cost, cell(xy), [cell(target)])[0]):
-            return np.array([xy, target])
-    return np.array([xy, _point_along(path, .1)])
-
-
-def planner_process(conn, planner_name, altitude, camera_offset, pitch_down_deg, carrot_m):
-    """The planner and depth projection, in their own process: both are pure-Python CPU work
-    and, sharing the ROS process's GIL, stalled the PX4 callbacks for 0.4 s at a time (FlyX run
-    4: "odometry stale (0.42s)" in TAKEOFF; reproduced on a loaded CPU with simulated depth)."""
-    signal.signal(signal.SIGINT, signal.SIG_IGN)          # the parent handles Ctrl-C and lands
-    # Lower CPU priority than the ROS process: FlyX run 6's control loop stalled 1.05 s when this
-    # process got busy at the start of NAVIGATE, and PX4 failsafed on offboard_control_signal_lost.
-    try:
-        os.nice(10)
-    except OSError:
-        pass
-    from pathplan.depth_projection import (CameraMount, Intrinsics, decode_depth_image, drop_misregistered,
-                                           project_depth)
-    from pathplan.ros_node import build_planner
-    from pathplan.world import clearance
-    planner, spec, env, prior = build_planner(planner_name, altitude)
-    near_wall = (clearance(prior, spec) < WALL_SNAP_M) & ~prior
-    mount = CameraMount(offset=tuple(camera_offset), pitch_down_deg=pitch_down_deg)
-    votes = np.zeros(prior.shape, np.int8)
-    quality = {"hits": 0, "hits_on_published_walls": 0, "hits_new_confirmed": 0, "hits_new_ignored": 0}
-    conn.send(("ready", [float(v) for v in planner.checkpoints[-1].centre]))
-    while True:
-        msg = conn.recv()
-        if msg is None:
-            return
-        xy, yaw, frame = msg
-        t0 = time.perf_counter()
-        if frame is not None:
-            data, width, height, encoding, step, k, xyz, rotation = frame
-            depth = decode_depth_image(data, width, height, encoding, step)
-            cells = project_depth(depth, Intrinsics.from_k(k, width, height), xyz, rotation, spec,
-                                  altitude=altitude, half_height=env.half_height + env.tracking_margin,
-                                  mount=mount, expected=prior)
-            raw_hit = cells[1]
-            if len(raw_hit):                           # diagnostic: a wrong camera mount shows up here
-                on_wall = (prior | near_wall)[raw_hit[:, 0], raw_hit[:, 1]]
-                quality["hits"] += len(raw_hit)
-                quality["hits_on_published_walls"] += int(on_wall.sum())
-            free, hit, behind = drop_misregistered(*cells, prior, near_wall)
-            votes = np.maximum(votes - 1, 0).astype(np.int8)
-            if len(hit):
-                votes[hit[:, 0], hit[:, 1]] = np.minimum(votes[hit[:, 0], hit[:, 1]] + 2, 6)
-                known = planner.belief.occ[hit[:, 0], hit[:, 1]]
-                ok = known | (votes[hit[:, 0], hit[:, 1]] >= HIT_CONFIRM)
-                quality["hits_new_confirmed"] += int((ok & ~known).sum())
-                quality["hits_new_ignored"] += int((~ok).sum())
-                hit = hit[ok]
-            planner.observe(free, hit, behind)
-        cmd = planner.update(xy, yaw)
-        if cmd.mode == "move" and cmd.path is not None and len(cmd.path) >= 2:
-            cmd.path = safe_carrot_path(planner.belief.cost, spec, np.asarray(xy, float), cmd.path, carrot_m)
-        conn.send((cmd, planner.events, planner.cleared, 1e3 * (time.perf_counter() - t0), quality))
-
-
-class PlannerProcess:
-    """Runs ``planner_process``; offers what Mission uses (update, events, cleared). Create it
-    before rclpy.init: it forks, which is only safe before ROS threads exist."""
-
-    def __init__(self, a):
-        import multiprocessing as mp
-        ctx = mp.get_context("fork")
-        self.conn, child = ctx.Pipe()
-        self.proc = ctx.Process(target=planner_process, daemon=True,
-                                args=(child, a.planner, a.altitude, a.camera_offset, a.camera_pitch_down_deg,
-                                      a.carrot))
-        self.proc.start()
-        ready, self.pad_xy = self.conn.recv()
-        if ready != "ready":
-            raise RuntimeError("planner process did not start")
-        self.events, self.cleared, self.ms, self.depth_quality = [], [], 0.0, {}
-        self.frame, self.lock = None, threading.Lock()      # latest depth frame, from the depth callback
-
-    def give_frame(self, frame):
-        with self.lock:
-            self.frame = frame
-
-    def update(self, xy, yaw):
-        """One planning step. Blocks only the calling thread; waiting on the pipe frees the GIL."""
-        with self.lock:
-            frame, self.frame = self.frame, None
-        try:
-            self.conn.send((xy, yaw, frame))
-            cmd, self.events, self.cleared, self.ms, self.depth_quality = self.conn.recv()
-            return cmd
-        except (EOFError, OSError):
-            from pathplan.online import Command
-            self.events = self.events + [{"event": "planner process stopped"}]
-            return Command("failed", reason="planner process stopped")
-
-    def close(self):
-        try:
-            self.conn.send(None)
-        except OSError:
-            pass
-        self.proc.join(2.0)
-        if self.proc.is_alive():
-            self.proc.terminate()
 
 
 def print_summary(mission, planner, node, journal_path):
@@ -213,7 +96,9 @@ def print_summary(mission, planner, node, journal_path):
 
 def main(argv=None):
     a = parse_args(argv)
-    planner = PlannerProcess(a)          # first: it forks
+    from pathplan.ros_node import build_planner
+    planner = PlannerProcess(build_planner, (a.planner, a.altitude, a.camera_offset, a.camera_pitch_down_deg,
+                                             a.carrot))     # first: it forks
     import rclpy
     from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
     from rclpy.clock import Clock, ClockType
