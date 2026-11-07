@@ -36,6 +36,13 @@ from flyx.mission import Mission, MissionConfig, Telemetry      # noqa: E402
 from flyx.px4_link import NAN3, find_topic, odom_to_course, yaw_from_q_ned  # noqa: E402
 from pathplan.planner_process import MAX_TURN_RATE, PlannerProcess      # noqa: E402
 
+# Map alignment (visual-odometry drift): each planning step, shift the course frame by half the
+# drift the planner process measured from depth vs the published walls, at most ALIGN_STEP_M per
+# step (smooth setpoints) and ALIGN_MAX_M in total. Fake-PX4 with drift: 0.37 m of drift gave
+# real wall contacts while the estimate said "clear"; the lab run's 74 % depth-on-walls fits ~0.5 m.
+ALIGN_STEP_M = .04
+ALIGN_MAX_M = 1.5
+
 
 OUT_TOPICS = {                      # basename -> px4_msgs type (discovered with optional _vN suffix)
     "odom": ("vehicle_odometry", "VehicleOdometry"),
@@ -79,6 +86,10 @@ def print_summary(mission, planner, node, journal_path):
         lines += [f"  {m}" for m in node.px4_modes[-4:]]
     if node.stalls:
         lines.append(f"program stalls > 0.15 s: {len(node.stalls)}, worst {max(node.stalls):.2f} s")
+    if node.align_steps:
+        t = node.align_total
+        lines.append(f"map alignment (drift correction): total ({t[0]:+.2f}, {t[1]:+.2f}) m = "
+                     f"{float(np.hypot(*t)):.2f} m over {node.align_steps} steps")
     if mission.px4_failsafe_waits:
         lines.append(f"PX4 failsafe blips ridden out: {mission.px4_failsafe_waits * .05:.1f} s in total")
     q = planner.depth_quality or {}
@@ -144,6 +155,7 @@ def main(argv=None):
             self.depth_stats = {"frames": 0, "matched": 0, "fallback": 0, "unmatched": 0, "turning": 0, "max_odom_delay_s": 0.0}
             self.failsafe_flags = None
             self.px4_modes, self.stalls = [], []
+            self.align_total, self.align_steps, self.align_logged, self.align_capped = np.zeros(2), 0, -1e9, False
             self.offsets = deque(maxlen=200)    # arrival (ROS clock) - PX4 sample time, last ~2 s
             self.intr = None
             self.subs = {}
@@ -307,11 +319,33 @@ def main(argv=None):
             t0 = time.perf_counter()
             cmd = mission.plan()
             ms = 1e3 * (time.perf_counter() - t0)
+            if planner.align is not None and mission.frame is not None:
+                self.apply_alignment(planner.align)
             if cmd is not None:
                 log({"kind": "plan", "t": self.now(), "mode": cmd.mode, "reason": cmd.reason, "ms": round(ms, 1),
                      "planner_ms": round(planner.ms, 1),
                      "target": None if mission.target is None else [list(mission.target[0]), mission.target[1]],
                      "cleared": [c["name"] for c in planner.cleared]})
+
+        def apply_alignment(self, shift):
+            """Move the course frame so depth hits sit on the published walls (drift correction)."""
+            step = .6 * np.asarray(shift, float)
+            n = float(np.linalg.norm(step))
+            if n > ALIGN_STEP_M:
+                step *= ALIGN_STEP_M / n
+            total = self.align_total + step
+            if np.linalg.norm(total) > ALIGN_MAX_M:
+                if not self.align_capped:
+                    self.align_capped = True
+                    log({"kind": "align", "t": self.now(), "note": "capped", "total": self.align_total.tolist()})
+                return
+            frame = mission.frame
+            frame.origin_in_course = frame.origin_in_course + np.array([step[0], step[1], 0.0])
+            self.align_total, self.align_steps = total, self.align_steps + 1
+            if time.monotonic() - self.align_logged > 2.0:
+                self.align_logged = time.monotonic()
+                log({"kind": "align", "t": self.now(), "total": [round(v, 3) for v in total],
+                     "last_shift": [round(v, 3) for v in shift], "steps": self.align_steps})
 
         # ---------------------------------------------------------- control
         def on_control(self):

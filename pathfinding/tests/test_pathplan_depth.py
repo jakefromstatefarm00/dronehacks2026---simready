@@ -68,3 +68,24 @@ def test_decode_16uc1_and_32fc1():
     assert img[0, 0] == 1.5 and np.isnan(img[0, 1])
     with pytest.raises(ValueError):
         decode_depth_image(b"\x00" * 4, 2, 1, "rgb8")
+
+
+
+def test_align_to_map_recovers_drift_at_a_corner_and_only_sideways_in_a_corridor():
+    """Depth hits on the wall surfaces, seen from a pose that is off by ``drift``."""
+    from pathplan.depth_projection import align_to_map, map_distance_field
+    from pathplan.world import GridSpec
+    spec = GridSpec(half_size=1.5, resolution=.05)
+    occ = np.zeros((spec.n, spec.n), bool)
+    occ[:, :4] = True                                   # wall face at x = -1.3
+    occ[:4, :] = True                                   # wall face at y = -1.3 (corner at bottom-left)
+    dist, grad = map_distance_field(occ, spec)
+    t = np.linspace(-1.2, 0.0, 40)
+    x_wall = np.column_stack([np.full_like(t, -1.3), t])
+    y_wall = np.column_stack([t, np.full_like(t, -1.3)])
+    drift = np.array([.12, -.08])                       # hits appear shifted by the pose error
+    shift, info = align_to_map(np.vstack([x_wall, y_wall]) + drift, dist, grad, spec)
+    assert shift is not None and np.allclose(shift, -drift, atol=.03), (shift, info)
+    shift, info = align_to_map(np.vstack([x_wall, x_wall + [0, .01]]) + drift, dist, grad, spec)   # one wall only
+    assert shift is not None and abs(shift[0] + drift[0]) < .03 and abs(shift[1]) < .01, (shift, info)
+    assert align_to_map(x_wall[:10] + drift, dist, grad, spec)[0] is None   # too few points: no guess

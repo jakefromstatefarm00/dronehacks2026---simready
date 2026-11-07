@@ -28,6 +28,11 @@ import px4_msgs.msg as px4
 
 OUT = sys.argv[1] if len(sys.argv) > 1 else "/tmp/fake_px4.json"
 YAW_RATE = 1.0                      # rad/s
+# FAKE_DRIFT=<m per m flown>: the reported pose (odometry, local position) drifts from the true one
+# by this much per metre flown, in direction FAKE_DRIFT_DEG (NED, from north): visual-odometry drift.
+# PX4 flies the *reported* pose to the setpoints; depth is rendered from the *true* pose.
+DRIFT = float(os.environ.get("FAKE_DRIFT", "0"))
+DRIFT_DIR = math.radians(float(os.environ.get("FAKE_DRIFT_DEG", "45")))
 
 
 class FakePX4(Node):
@@ -50,6 +55,7 @@ class FakePX4(Node):
         self.create_subscription(px4.TrajectorySetpoint, "/fmu/in/trajectory_setpoint", self.on_sp, q)
         self.create_subscription(px4.OffboardControlMode, "/fmu/in/offboard_control_mode", self.on_mode, q)
         self.dt = .02
+        self.drift, self.true_clear, self.last_dump = np.zeros(3), None, -1e9
         if os.environ.get("FAKE_DEPTH") == "1":
             self.setup_depth()
         self.slow = {"status": [1 / 1.7, -1e9, None], "land": [1 / .9, -1e9, None]}   # period, last t, last value
@@ -90,7 +96,9 @@ class FakePX4(Node):
         if self.arming == 2 and self.nav == 14 and self.sp is not None:
             d = self.sp[0] - self.pos
             n = np.linalg.norm(d)
-            self.pos += d if n < 1.0 * self.dt else d / n * 1.0 * self.dt
+            move = d if n < 1.0 * self.dt else d / n * 1.0 * self.dt
+            self.pos += move
+            self.drift += DRIFT * float(np.linalg.norm(move[:2])) * np.array([math.cos(DRIFT_DIR), math.sin(DRIFT_DIR), 0.0])
             turn = math.atan2(math.sin(self.sp[1] - self.yaw), math.cos(self.sp[1] - self.yaw))
             self.yaw += max(-YAW_RATE * self.dt, min(YAW_RATE * self.dt, turn))   # PX4 limits yaw rate too
         elif self.nav == 18:
@@ -98,6 +106,12 @@ class FakePX4(Node):
             if self.pos[2] >= 0.0 and self.arming == 2:
                 self.arming, self.landed = 1, True
         self.log["max_alt"] = max(self.log["max_alt"], -self.pos[2])
+        self.true_safety()
+        if now - self.last_dump > 1.0:                           # survives kill -9
+            self.last_dump = now
+            self.log.update(final={"pos": self.pos.tolist(), "arming": self.arming, "nav": self.nav,
+                                   "landed": self.landed, "drift": self.drift.tolist()})
+            json.dump(self.log, open(OUT, "w"))
         if int(now / self.dt) % 25 == 0:
             self.log["path"].append([round(float(v), 3) for v in self.pos])
         us = int(now * 1e6)
@@ -140,14 +154,27 @@ class FakePX4(Node):
         course, _ = load_published()
         self.spec = GridSpec()
         self.occ = occupancy(course, self.spec, altitude=.9, half_height=.05)
+        from pathplan.world import clearance
+        self.true_clear = clearance(occupancy(course, self.spec, altitude=.9, half_height=.13), self.spec)
         self.Image, self.CameraInfo = Image, CameraInfo
         self.depth_pub = self.create_publisher(Image, "/camera/depth/image_raw", qos_profile_sensor_data)
         self.info_pub = self.create_publisher(CameraInfo, "/camera/depth/camera_info", qos_profile_sensor_data)
         self.create_timer(1 / 13, self.publish_depth)
 
+    def true_safety(self):
+        """Distance from the TRUE position to the nearest wall (airborne only): the real safety margin."""
+        if self.true_clear is None or -self.pos[2] < .5:
+            return
+        t = self.pos - self.drift
+        rc = self.spec.to_cell(np.array([t[1] - 2.515, t[0] + .914]))
+        c = float(self.true_clear[rc[0], rc[1]])
+        self.log["min_true_clearance"] = min(self.log.get("min_true_clearance", 9.0), round(c, 3))
+        if c < .28:                                              # Sky Beta radius: a contact
+            self.log["contact_steps"] = self.log.get("contact_steps", 0) + 1
+
     def publish_depth(self):
         stamp = self.get_clock().now().to_msg()      # capture time, like a real camera (before rendering)
-        depth = render_depth(self.occ, self.spec, self.pos, self.yaw, self.K, self.W, self.H)
+        depth = render_depth(self.occ, self.spec, self.pos - self.drift, self.yaw, self.K, self.W, self.H)
         mm = np.where(np.isfinite(depth) & (depth < 10), depth * 1000, 0).astype("<u2")
         img = self.Image(height=self.H, width=self.W, encoding="16UC1", step=self.W * 2, data=mm.tobytes())
         img.header.stamp, img.header.frame_id = stamp, "oak_left"

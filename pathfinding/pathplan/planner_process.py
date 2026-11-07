@@ -56,11 +56,13 @@ def planner_process(conn, build_planner):
     if config is None:
         return
     planner_name, altitude, camera_offset, pitch_down_deg, carrot_m = config
-    from .depth_projection import CameraMount, Intrinsics, decode_depth_image, drop_misregistered, project_depth
+    from .depth_projection import (CameraMount, Intrinsics, align_to_map, decode_depth_image, drop_misregistered,
+                                   map_distance_field, project_depth)
     from .world import clearance
     planner, spec, env, prior = build_planner(planner_name, altitude)
     planner.cfg.turn_in_place_deg = TURN_IN_PLACE_DEG
     near_wall = (clearance(prior, spec) < WALL_SNAP_M) & ~prior
+    dist, grad = map_distance_field(prior, spec)
     mount = CameraMount(offset=tuple(camera_offset), pitch_down_deg=pitch_down_deg)
     votes = np.zeros(prior.shape, np.int8)
     quality = {"hits": 0, "hits_on_published_walls": 0, "hits_new_confirmed": 0, "hits_new_ignored": 0}
@@ -71,12 +73,16 @@ def planner_process(conn, build_planner):
             return
         xy, yaw, frame = msg
         t0 = time.perf_counter()
+        align = None
         if frame is not None:
             data, width, height, encoding, step, k, xyz, rotation = frame
             depth = decode_depth_image(data, width, height, encoding, step)
             cells = project_depth(depth, Intrinsics.from_k(k, width, height), xyz, rotation, spec,
                                   altitude=altitude, half_height=env.half_height + env.tracking_margin,
-                                  mount=mount, expected=prior)
+                                  mount=mount, expected=prior, hit_points=(points := []))
+            shift, _ = align_to_map(points[0] if points else None, dist, grad, spec)
+            if shift is not None:
+                align = [float(shift[0]), float(shift[1])]
             raw_hit = cells[1]
             if len(raw_hit):                           # diagnostic: a wrong camera mount shows up here
                 on_wall = (prior | near_wall)[raw_hit[:, 0], raw_hit[:, 1]]
@@ -95,7 +101,7 @@ def planner_process(conn, build_planner):
         cmd = planner.update(xy, yaw)
         if cmd.mode == "move" and cmd.path is not None and len(cmd.path) >= 2:
             cmd.path = safe_carrot_path(planner.belief.cost, spec, np.asarray(xy, float), cmd.path, carrot_m)
-        conn.send((cmd, planner.events, planner.cleared, 1e3 * (time.perf_counter() - t0), quality))
+        conn.send((cmd, planner.events, planner.cleared, 1e3 * (time.perf_counter() - t0), quality, align))
 
 
 class PlannerProcess:
@@ -109,6 +115,7 @@ class PlannerProcess:
         self.proc.start()
         self.pad_xy = None
         self.events, self.cleared, self.ms, self.depth_quality = [], [], 0.0, {}
+        self.align = None                      # latest map-alignment shift (course xy, m) or None
         self.frame, self.lock = None, threading.Lock()      # latest depth frame, from the depth callback
         if config is not None:
             self.configure(*config)
@@ -130,7 +137,7 @@ class PlannerProcess:
             frame, self.frame = self.frame, None
         try:
             self.conn.send((xy, yaw, frame))
-            cmd, self.events, self.cleared, self.ms, self.depth_quality = self.conn.recv()
+            cmd, self.events, self.cleared, self.ms, self.depth_quality, self.align = self.conn.recv()
             return cmd
         except (EOFError, OSError):
             from .online import Command

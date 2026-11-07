@@ -70,7 +70,7 @@ def body_to_course(yaw, roll=0.0, pitch=0.0):
 
 def project_depth(depth_m, intr: Intrinsics, position, rotation, spec, *, altitude=.9, half_height=.21,
                   mount: CameraMount = CameraMount(), stride=8, min_range=.35, max_range=3.5,
-                  occlusion_depth=.4, expected=None):
+                  occlusion_depth=.4, expected=None, hit_points=None):
     """Return (free, hit, behind) (K, 2) int cell arrays, like ``DepthCamera.observe``.
 
     depth_m   (H, W) metres (convert uint16 millimetres first)
@@ -106,6 +106,8 @@ def project_depth(depth_m, intr: Intrinsics, position, rotation, spec, *, altitu
     end_in_slab = (np.abs(ends[:, 2] - altitude) <= half_height) & \
         ((ends[:, :2] > -spec.half_size) & (ends[:, :2] < spec.half_size)).all(-1)
     hit_rc = spec.to_cell(ends[end_in_slab, :2])
+    if hit_points is not None:                       # caller wants the exact hit xy (map alignment)
+        hit_points.append(ends[end_in_slab, :2])
     free = np.unique(rc[free_mask], axis=0) if free_mask.any() else empty
     hit = np.unique(hit_rc, axis=0) if len(hit_rc) else empty
     if len(free) and len(hit):
@@ -159,3 +161,77 @@ def drop_misregistered(free, hit, behind, prior, near_wall):
     def keep(cells, mask):
         return cells[~mask[cells[:, 0], cells[:, 1]]] if len(cells) else cells
     return keep(free, prior), keep(hit, prior | near_wall), keep(behind, prior | near_wall)
+
+
+def map_distance_field(prior, spec):
+    """(signed distance to the published wall surface in m - negative inside walls - and its
+    gradient (d/dx, d/dy)) for align_to_map. Signed, so hits pushed *into* a wall by drift still
+    say which way to move (unsigned, they sit at 0 with no gradient)."""
+    from . import world
+    edt = world.distance_transform_edt if world.distance_transform_edt is not None else world._edt_capped
+    outside = edt(~prior) * spec.resolution - spec.resolution / 2
+    inside = edt(prior) * spec.resolution - spec.resolution / 2
+    dist = np.where(prior, -inside, outside)
+    d_row, d_col = np.gradient(dist, spec.resolution)
+    return dist, np.stack([d_col, d_row], axis=-1)
+
+
+def _bilinear(field, spec, pts):
+    """Sample a (n, n[, k]) cell field at xy points (bilinear; cell centres at to_xy)."""
+    f = (np.asarray(pts)[:, ::-1] + spec.half_size) / spec.resolution - .5      # (row, col) floats
+    f = np.clip(f, 0, field.shape[0] - 1.001)
+    r0, c0 = np.floor(f).astype(int).T
+    fr, fc = (f - np.floor(f)).T
+    if field.ndim == 3:
+        fr, fc = fr[:, None], fc[:, None]
+    return ((1 - fr) * (1 - fc) * field[r0, c0] + (1 - fr) * fc * field[r0, c0 + 1]
+            + fr * (1 - fc) * field[r0 + 1, c0] + fr * fc * field[r0 + 1, c0 + 1])
+
+
+def align_to_map(points, dist, grad, spec, *, near=.35, min_points=40, iterations=5):
+    """The 2-D shift that best moves depth hits onto the published walls (visual-odometry drift).
+
+    ``points`` (N, 2) hit xy in the course frame. Only hits within ``near`` of a wall surface are
+    used (that wall seen from a slightly wrong pose; farther ones may be real new obstacles).
+    Gauss-Newton on the signed wall distance, sampled bilinearly (sub-cell: the correction must
+    follow drift while it is still a few cm, or it later snaps onto the wrong wall); only
+    directions the walls constrain are corrected (in a straight corridor only the sideways one).
+    Returns (shift (2,), info dict) or (None, info).
+    """
+    info = {"points": 0}
+    if points is None or len(points) == 0:
+        return None, info
+    pts = np.asarray(points, float)
+    pts = pts[np.abs(_bilinear(dist, spec, pts)) < near]
+    info["points"] = int(len(pts))
+    if len(pts) < min_points:
+        return None, info
+    shift = np.zeros(2)
+    rms0 = None
+    for _ in range(iterations):
+        d = _bilinear(dist, spec, pts + shift)
+        g = _bilinear(grad, spec, pts + shift)
+        rms = float(np.sqrt(np.mean(d ** 2)))
+        rms0 = rms if rms0 is None else rms0
+        H = g.T @ g
+        b = g.T @ d
+        w, v = np.linalg.eigh(H)
+        step = np.zeros(2)
+        for lam, vec in zip(w, v.T):
+            # a direction the walls really constrain: an absolute amount of wall evidence (~10 hits
+            # square-on). Relative to all hits, the side walls of a corridor (seen at a grazing angle,
+            # few hits) never counted and east-west drift went uncorrected (fake-PX4, 4 cm/m drift)
+            if lam > max(10.0, .02 * len(pts)):
+                step -= (vec @ b) / lam * vec
+        n = float(np.linalg.norm(step))
+        if n > .1:
+            step *= .1 / n
+        shift += step
+        if n < .002:
+            break
+    rms1 = float(np.sqrt(np.mean(_bilinear(dist, spec, pts + shift) ** 2)))
+    info.update(rms_before=round(rms0, 4), rms_after=round(rms1, 4))
+    # accept any clear improvement (absolute, so small drift is still followed); refuse big jumps
+    if not np.any(shift) or rms1 > rms0 - .003 or np.linalg.norm(shift) > .3:
+        return None, info
+    return shift, info
