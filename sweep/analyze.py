@@ -15,7 +15,7 @@ from __future__ import annotations
 import argparse
 import csv
 import json
-from collections import defaultdict
+from collections import Counter, defaultdict
 from pathlib import Path
 
 import numpy as np
@@ -65,6 +65,10 @@ def summarise(rows):
             errors=sum(r["outcome"] == "error" for r in rs),
             timeouts=sum(r["outcome"] == "timeout" for r in rs),
             whys=sorted({r["why"][:60] for r in rs if r["why"]})[:4],
+            # where runs fail: "after cp k" = k checkpoints cleared (0 = first corridor, 1 = maze to
+            # Gate A, 2 = tunnel, 3 = chicane/window, 4 = landing approach)
+            fail_at=" ".join(f"{k}:{v}" for k, v in sorted(Counter(
+                r["checkpoints"] for r in rs if r["outcome"] != "finished").items())),
         )
     return out
 

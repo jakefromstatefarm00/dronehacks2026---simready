@@ -29,6 +29,7 @@ import os
 import queue
 import sys
 import threading
+from collections import deque
 import time
 import types
 from dataclasses import dataclass, field
@@ -82,6 +83,9 @@ class Level:
     pause_s: tuple = (.3, 1.4)
     vio_scale: float = 0.0            # VIO hazard multiplier
     jump_m: float = .10               # std of a VIO estimate jump (per horizontal axis)
+    # depth frame registered with the odometry this many 50 ms ticks older than the image
+    # (pose_at matches stamps to within 0.05 s; residual stamp error and odometry delay remain)
+    depth_lag: tuple = (0, 0)
     # real-time factor: physics seconds per program (wall) second. The drone is 1.0; the FlyX lab
     # runs ~0.8 while the program, its 5 Hz planner, yaw cap and stalls run on the wall clock.
     rtf: float = 1.0
@@ -103,23 +107,23 @@ LEVELS = {
     # exactly the published course, ideal estimate, no stalls: the calibration level
     "L0": Level("L0"),
     # "mess with it slightly"
-    "L1": Level("L1", wall_shift=.05, clutter=(0, 1), depth_noise=.003, stall_rate=.3, stall_long_p=.01,
+    "L1": Level("L1", wall_shift=.05, clutter=(0, 1), depth_noise=.003, depth_lag=(0, 1), stall_rate=.3, stall_long_p=.01,
                 stall_max=1.0, pause_every_s=60, pause_s=(.3, .6), vio_scale=.5,
                 dyn=_dyn(kp_xy=(.9, 1.0), tau=(.35, .6), delay_steps=(1, 2), pos_noise=(.002, .005),
                          vel_noise=(.01, .02), drift_per_sqrt_m=(0., .005), drift_rate=(0., .001),
                          yaw_drift_rate=(0., .003), disturbance=(0., .1))),
     # what FlyX actually measured: stalls 0.63/s up to 1.95 s, pauses 0.3-1.4 s, lag 0.35-1.0 s
-    "L2": Level("L2", wall_shift=.10, clutter=(1, 2), depth_noise=.006, stall_rate=.63, stall_long_p=.03,
+    "L2": Level("L2", wall_shift=.10, clutter=(1, 2), depth_noise=.006, depth_lag=(0, 1), stall_rate=.63, stall_long_p=.03,
                 pause_every_s=25, vio_scale=1.0,
                 dyn=_dyn(kp_xy=(.85, 1.05), tau=(.35, 1.0), delay_steps=(1, 3), pos_noise=(.003, .01),
                          vel_noise=(.01, .04), drift_per_sqrt_m=(.0, .01), drift_rate=(0., .002),
                          yaw_drift_rate=(0., .005), disturbance=(0., .2))),
-    "L3": Level("L3", wall_shift=.15, clutter=(1, 3), depth_noise=.01, stall_rate=.8, stall_long_p=.05,
+    "L3": Level("L3", wall_shift=.15, clutter=(1, 3), depth_noise=.01, depth_lag=(1, 2), stall_rate=.8, stall_long_p=.05,
                 stall_max=2.5, pause_every_s=12, pause_s=(.3, 2.0), vio_scale=2.0, jump_m=.15,
                 dyn=_dyn(kp_xy=(.8, 1.1), tau=(.5, 1.2), delay_steps=(2, 4), pos_noise=(.005, .015),
                          vel_noise=(.02, .06), drift_per_sqrt_m=(.005, .02), drift_rate=(0., .003),
                          yaw_drift_rate=(0., .01), disturbance=(0., .3))),
-    "L4": Level("L4", wall_shift=.20, clutter=(2, 4), clutter_radius=(.12, .22), depth_noise=.015,
+    "L4": Level("L4", wall_shift=.20, clutter=(2, 4), clutter_radius=(.12, .22), depth_noise=.015, depth_lag=(1, 3),
                 stall_rate=1.0, stall_long_p=.08, stall_max=3.0, pause_every_s=8, pause_s=(.3, 2.5),
                 vio_scale=3.0, jump_m=.2,
                 dyn=_dyn(kp_xy=(.75, 1.15), tau=(.6, 1.4), delay_steps=(3, 5), pos_noise=(.01, .02),
@@ -387,11 +391,14 @@ def run(knobs, level_name, seed, *, cache_dir=None, t_max=185.0, trace=False, le
     renderer = DepthRenderer(occ_f)
     max_turn_rate = mods["pathplan.planner_process"].MAX_TURN_RATE
 
+    pose_hist = deque(maxlen=8)
+
     def set_odom(t):
         p_est, _, yaw_est = sim.estimate()
         tel.odom_t = t
         tel.position_ned = tuple(frame.to_ned(p_est))
         tel.q_ned_frd = _quat_ned(north - yaw_est)
+        pose_hist.append(PX.odom_to_course(frame, tel.position_ned, tel.q_ned_frd))
         return p_est, yaw_est
 
     p_est, yaw_est = set_odom(0.0)
@@ -428,7 +435,8 @@ def run(knobs, level_name, seed, *, cache_dir=None, t_max=185.0, trace=False, le
                 if mission.planning_allowed() and not paused and abs(sim.yaw_rate) <= max_turn_rate:
                     img = renderer.render(sim.p[:2] + _rot(sim.yaw) @ np.array(CAM_OFFSET[:2]), sim.yaw,
                                           sim.p[2] + CAM_OFFSET[2], r_depth, level.depth_noise)
-                    xyz, _, rotation = mission.pose_course
+                    lag = int(r_depth.integers(level.depth_lag[0], level.depth_lag[1] + 1))
+                    xyz, _, rotation = pose_hist[max(-len(pose_hist), -1 - lag)] if lag else mission.pose_course
                     planner.give_frame((img.tobytes(), IMG_W, IMG_H, "32FC1", IMG_W * 4, K, xyz, rotation))
                     gave = True
                 calls0 = online.stats["plan_calls"]

@@ -24,6 +24,7 @@ AXES = (
     + [_ax("px4_kp", kp, dyn=_dyn(kp_xy=(kp, kp))) for kp in (.7, 1.2)]
     + [_ax("vio_hazard_x", s, vio_scale=s) for s in (1, 2, 4, 8)]
     + [_ax("depth_noise_k", k, depth_noise=k) for k in (.01, .02, .04)]
+    + [_ax("depth_pose_lag_ticks", n, depth_lag=(n, n)) for n in (1, 2, 4)]
 )
 
 # calibration: the unmodified base at the nominal and the FlyX-like level, on the drone's clock
