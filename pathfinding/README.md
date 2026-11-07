@@ -13,7 +13,7 @@ Everything needed to run, test and change our pathfinding. Three things live her
 ```bash
 cd pathfinding
 python3 -m venv .venv && .venv/bin/pip install -r requirements.txt     # Windows: .venv\Scripts\pip
-.venv/bin/python -m pytest -q tests                                     # 152 tests, ~15 s
+.venv/bin/python -m pytest -q tests                                     # 154 tests, ~15 s
 .venv/bin/python -m pathplan.harness --variants 4 --output runs/bench   # offline benchmark, ~4 min
 bash gzsim/run.sh                                                        # Gazebo flight (Linux/WSL + Docker)
 ```
@@ -43,9 +43,10 @@ Gate B when the window approach is blocked.
 
 ## FlyX (`flyx/`)
 
-**The FlyX cloud lab is native PX4 with no skybeta interface**, so the program for it is
-`flyx/fly_pathplan.py` (PX4 Offboard via `px4_msgs`: arm, takeoff, course, PX4 land).
-Runbook, what each file does and the first lab run's fixes: [`flyx/README.md`](flyx/README.md).
+**The file to give FlyX is `flyx/upload_to_flyx.py`**: self-contained (FlyX uploads one file
+as `main.py`), native PX4 Offboard via `px4_msgs` (arm, takeoff, course, PX4 land), flies
+by default, `--shadow` to plan only. It is generated from `flyx/fly_pathplan.py`, which runs
+the same program from a clone. Runbook and the first lab runs' fixes: [`flyx/README.md`](flyx/README.md).
 
 ```bash
 python3 -m flyx.check_lab                                              # read-only lab check
@@ -57,7 +58,7 @@ python3 -m flyx.fly_pathplan --execute --depth-topic /camera/depth/image_raw
 of the organisers' `square_mission.py`: `/skybeta/state` + `/visual_slam/tracking/odometry`
 in, `/skybeta/setpoint/pose` out; never arms, ends holding over the pad). Use it on a stack
 that runs skybeta (the real drone). It is generated from `ros2/dronehacks_pathplan/` +
-`pathplan/` by `python tools/build_single_file.py`; do not edit it by hand.
+`pathplan/` by `python tools/build_single_file.py` (which builds both single files); do not edit it by hand.
 
 ## The simulation
 
@@ -112,10 +113,11 @@ coordinates.
 
 ```
 pathplan/        the algorithm + offline benchmark
-flyx/            FlyX lab: check_lab, fly_pathplan (native PX4); pathplan_mission.py (skybeta, generated)
+flyx/            FlyX: upload_to_flyx.py (THE upload, generated), fly_pathplan + check_lab (from a clone),
+                 pathplan_mission.py (skybeta single file, generated)
 ros2/            dronehacks_pathplan: the same node as a ROS 2 package (source of the file)
 gzsim/           Gazebo test bed: run.sh, make_world.py, fly_planner.py
-tools/           build_single_file.py
+tools/           build_single_file.py (builds both single files)
 course/ config/  the published course (OBJ) and its gate list
 drl/             the team's OBJ -> collision-primitives loader (used by pathplan)
 tests/

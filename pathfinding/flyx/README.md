@@ -1,9 +1,13 @@
 # flyx — run the planner in the FlyX cloud lab
 
-**The FlyX lab is native PX4** (ROS 2 Jazzy, PX4 SITL, `/fmu/in|out/*`, cuVSLAM, simulated
-OAK-D depth). It has **no `/skybeta/state`**, so use `fly_pathplan.py` there.
-`pathplan_mission.py` is the skybeta-interface version, for a stack that runs skybeta
-(the real drone); in FlyX it would wait for Offboard forever.
+**Upload `upload_to_flyx.py` to FlyX** ("Run saved file"). FlyX copies only that one file
+(as `project/main.py`), so it is self-contained: planner, state machine and course map are
+embedded. **It flies by default** (Offboard, arm, takeoff, course, land) with depth from
+`/camera/depth/image_raw`; pass `--shadow` to plan without sending anything to PX4.
+Reset world first; start on the launch mark facing up the first corridor.
+
+The FlyX lab is native PX4 with **no `/skybeta/state`**: `pathplan_mission.py` (skybeta
+interface) would wait for Offboard forever there.
 
 | File | What it is |
 |---|---|
@@ -12,9 +16,13 @@ OAK-D depth). It has **no `/skybeta/state`**, so use `fly_pathplan.py` there.
 | `mission.py` | The state machine (pure Python, unit-tested): what to publish, when to land. |
 | `px4_link.py` | NED <-> course frame, PX4 command constants, topic discovery. |
 | `fake_px4.py` | Test only: fake PX4 for wiring checks without a simulator. Never point it at a real PX4. |
-| `pathplan_mission.py` | Generated single-file skybeta node (see `../README.md`). |
+| `upload_to_flyx.py` | **Generated** single file of `fly_pathplan.py` for FlyX upload (flies by default). |
+| `pathplan_mission.py` | **Generated** single-file skybeta node (see `../README.md`). |
 
-## Runbook
+Don't edit the generated files by hand: change the sources and run `python tools/build_single_file.py`
+(`tests/test_single_files.py` fails if they are stale).
+
+## Runbook (terminal in the lab, from a clone of this repo)
 
 ```bash
 cd pathfinding
