@@ -89,3 +89,21 @@ def test_align_to_map_recovers_drift_at_a_corner_and_only_sideways_in_a_corridor
     shift, info = align_to_map(np.vstack([x_wall, x_wall + [0, .01]]) + drift, dist, grad, spec)   # one wall only
     assert shift is not None and abs(shift[0] + drift[0]) < .03 and abs(shift[1]) < .01, (shift, info)
     assert align_to_map(x_wall[:10] + drift, dist, grad, spec)[0] is None   # too few points: no guess
+
+
+def test_align_to_map_is_not_dragged_by_a_moved_wall():
+    """Two walls match the map; a third, seen as much, was moved 0.2 m: no drift -> ~no shift."""
+    from pathplan.depth_projection import align_to_map, map_distance_field
+    from pathplan.world import GridSpec
+    spec = GridSpec(half_size=1.5, resolution=.05)
+    occ = np.zeros((spec.n, spec.n), bool)
+    occ[:, :4] = True                                   # face x = -1.3
+    occ[:, -4:] = True                                  # face x = +1.3
+    occ[:4, :] = True                                   # face y = -1.3
+    dist, grad = map_distance_field(occ, spec)
+    t = np.linspace(-1.2, 1.2, 40)
+    left = np.column_stack([np.full_like(t, -1.3), t])
+    right_moved = np.column_stack([np.full_like(t, 1.1), t])          # really 0.2 m further in
+    bottom = np.column_stack([t, np.full_like(t, -1.3)])
+    shift, info = align_to_map(np.vstack([left, left, right_moved, bottom]), dist, grad, spec)
+    assert shift is None or abs(shift[0]) < .05, (shift, info)

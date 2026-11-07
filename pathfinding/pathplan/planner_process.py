@@ -16,8 +16,11 @@ import time
 
 import numpy as np
 
-WALL_SNAP_M = .25       # depth returns this close to a published wall are that wall (pose error,
-                        # stereo noise): FlyX run 6 lost the tight passage past maze wall M1 to them
+WALL_SNAP_M = .12       # depth returns this close to a published wall are that wall (pose error,
+                        # stereo noise; FlyX run 6 lost the tight passage past maze wall M1 to them).
+                        # Was 0.25 m, which also hid walls *moved* by up to 25 cm: fake-PX4 on the
+                        # benchmark's moved-wall courses, no drift: 119 wall contacts. Map alignment
+                        # now removes most pose error, and HIT_CONFIRM filters noise.
 HIT_CONFIRM = 3         # vote threshold for a new obstacle cell: +2 per frame that hits it, -1 per
                         # frame, so it must be seen in 2 of ~3 frames (single noisy frames are ignored)
 MAX_TURN_RATE = .5      # rad/s: depth frames taken while turning faster are dropped (pose error)

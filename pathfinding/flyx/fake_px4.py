@@ -33,6 +33,8 @@ YAW_RATE = 1.0                      # rad/s
 # PX4 flies the *reported* pose to the setpoints; depth is rendered from the *true* pose.
 DRIFT = float(os.environ.get("FAKE_DRIFT", "0"))
 DRIFT_DIR = math.radians(float(os.environ.get("FAKE_DRIFT_DEG", "45")))
+# FAKE_DEPTH_NOISE=<fraction>: Gaussian depth noise, std = fraction x depth (stereo: ~1 % -> 2 cm at 2 m)
+DEPTH_NOISE = float(os.environ.get("FAKE_DEPTH_NOISE", "0"))
 
 
 class FakePX4(Node):
@@ -56,6 +58,7 @@ class FakePX4(Node):
         self.create_subscription(px4.OffboardControlMode, "/fmu/in/offboard_control_mode", self.on_mode, q)
         self.dt = .02
         self.drift, self.true_clear, self.last_dump = np.zeros(3), None, -1e9
+        self.in_contact, self.rng = False, np.random.default_rng(int(os.environ.get("FAKE_SEED", "0")))
         if os.environ.get("FAKE_DEPTH") == "1":
             self.setup_depth()
         self.slow = {"status": [1 / 1.7, -1e9, None], "land": [1 / .9, -1e9, None]}   # period, last t, last value
@@ -151,11 +154,18 @@ class FakePX4(Node):
         sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
         from pathplan.harness import load_published
         from pathplan.world import GridSpec, occupancy
-        course, _ = load_published()
+        course, route = load_published()
         self.spec = GridSpec()
+        world = os.environ.get("FAKE_WORLD", "")
+        if world:                                  # e.g. "walls-01": a benchmark course the map does not know
+            course = benchmark_world(course, route, world)
+            self.log["world"] = world
         self.occ = occupancy(course, self.spec, altitude=.9, half_height=.05)
         from pathplan.world import clearance
-        self.true_clear = clearance(occupancy(course, self.spec, altitude=.9, half_height=.13), self.spec)
+        self.true_occ = occupancy(course, self.spec, altitude=.9, half_height=.13)
+        self.true_clear = clearance(self.true_occ, self.spec)                       # TRUE course
+        published, _ = load_published()
+        self.published_occ = occupancy(published, self.spec, altitude=.9, half_height=.13)
         self.Image, self.CameraInfo = Image, CameraInfo
         self.depth_pub = self.create_publisher(Image, "/camera/depth/image_raw", qos_profile_sensor_data)
         self.info_pub = self.create_publisher(CameraInfo, "/camera/depth/camera_info", qos_profile_sensor_data)
@@ -171,10 +181,23 @@ class FakePX4(Node):
         self.log["min_true_clearance"] = min(self.log.get("min_true_clearance", 9.0), round(c, 3))
         if c < .28:                                              # Sky Beta radius: a contact
             self.log["contact_steps"] = self.log.get("contact_steps", 0) + 1
+            if not self.in_contact:                              # new contact: where, and with what
+                xy = np.array([t[1] - 2.515, t[0] + .914])
+                cells = self.spec.to_xy(np.argwhere(self.true_occ))
+                k = int(np.argmin(np.linalg.norm(cells - xy, axis=1)))
+                rc = self.spec.to_cell(cells[k])
+                what = "published wall" if self.published_occ[rc[0], rc[1]] else "NOT on the published map"
+                self.log.setdefault("contacts", []).append({"at": xy.round(2).tolist(), "clearance": round(c, 3),
+                                                            "hit": what, "obstacle_at": cells[k].round(2).tolist()})
+            self.in_contact = True
+        else:
+            self.in_contact = False
 
     def publish_depth(self):
         stamp = self.get_clock().now().to_msg()      # capture time, like a real camera (before rendering)
         depth = render_depth(self.occ, self.spec, self.pos - self.drift, self.yaw, self.K, self.W, self.H)
+        if DEPTH_NOISE > 0:
+            depth = depth * (1 + DEPTH_NOISE * self.rng.standard_normal(depth.shape))
         mm = np.where(np.isfinite(depth) & (depth < 10), depth * 1000, 0).astype("<u2")
         img = self.Image(height=self.H, width=self.W, encoding="16UC1", step=self.W * 2, data=mm.tobytes())
         img.header.stamp, img.header.frame_id = stamp, "oak_left"
@@ -182,6 +205,34 @@ class FakePX4(Node):
         info = self.CameraInfo(height=self.H, width=self.W, k=list(self.K))
         info.header.stamp, info.header.frame_id = stamp, "oak_left"
         self.info_pub.publish(info)
+
+
+def benchmark_world(course, route, world_id):
+    """The course of offline benchmark variant ``world_id`` ("walls-01", "clutter-02", "mixed-00"...):
+    same generator, seed and validity check as pathplan.harness, so the ids match its table."""
+    from pathplan.harness import START_XY, static_route
+    from pathplan.variants import perturb
+    from pathplan.world import Envelope, GridSpec, checkpoints_from_route, cost_grid, occupancy
+    spec, env = GridSpec(), Envelope()
+    slab = env.half_height + env.tracking_margin
+    cps = checkpoints_from_route(route, course)
+    nominal = static_route(cost_grid(occupancy(course, spec, altitude=.9, half_height=slab), spec, env),
+                           spec, env, cps, START_XY)
+    keep = [(START_XY, .8), (np.asarray(route.centre[route.names.index("pad_hover")][:2]), .8)]
+    keep += [(c.centre, .45) for c in cps]
+    rng = np.random.default_rng(2026)
+    for kind in ("nominal", "walls", "clutter", "mixed"):
+        made = tries = 0
+        while made < (1 if kind == "nominal" else 4) and tries < 80:
+            tries += 1
+            v, _ = perturb(course, kind, rng, route_xy=nominal, keep_clear=keep)
+            truth = occupancy(v, spec, altitude=.9, half_height=slab)
+            if static_route(cost_grid(truth, spec, env), spec, env, cps, START_XY) is None:
+                continue
+            if f"{kind}-{made:02d}" == world_id:
+                return v
+            made += 1
+    raise ValueError(f"unknown benchmark world {world_id!r}")
 
 
 def render_depth(occ, spec, pos_ned, yaw_ned, K, W, H):

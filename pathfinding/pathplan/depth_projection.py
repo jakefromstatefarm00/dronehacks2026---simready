@@ -188,7 +188,7 @@ def _bilinear(field, spec, pts):
             + fr * (1 - fc) * field[r0 + 1, c0] + fr * fc * field[r0 + 1, c0 + 1])
 
 
-def align_to_map(points, dist, grad, spec, *, near=.35, min_points=40, iterations=5):
+def align_to_map(points, dist, grad, spec, *, near=.35, min_points=40, iterations=6, huber=.05):
     """The 2-D shift that best moves depth hits onto the published walls (visual-odometry drift).
 
     ``points`` (N, 2) hit xy in the course frame. Only hits within ``near`` of a wall surface are
@@ -196,6 +196,8 @@ def align_to_map(points, dist, grad, spec, *, near=.35, min_points=40, iteration
     Gauss-Newton on the signed wall distance, sampled bilinearly (sub-cell: the correction must
     follow drift while it is still a few cm, or it later snaps onto the wrong wall); only
     directions the walls constrain are corrected (in a straight corridor only the sideways one).
+    Robust (Huber, ``huber`` m): hits that disagree with the rest - a wall that has moved, a new
+    obstacle next to a wall - are down-weighted, so they cannot drag the whole correction.
     Returns (shift (2,), info dict) or (None, info).
     """
     info = {"points": 0}
@@ -213,8 +215,9 @@ def align_to_map(points, dist, grad, spec, *, near=.35, min_points=40, iteration
         g = _bilinear(grad, spec, pts + shift)
         rms = float(np.sqrt(np.mean(d ** 2)))
         rms0 = rms if rms0 is None else rms0
-        H = g.T @ g
-        b = g.T @ d
+        w = np.minimum(1.0, huber / np.maximum(np.abs(d), 1e-9))        # Huber weights
+        H = (g * w[:, None]).T @ g
+        b = (g * w[:, None]).T @ d
         w, v = np.linalg.eigh(H)
         step = np.zeros(2)
         for lam, vec in zip(w, v.T):
