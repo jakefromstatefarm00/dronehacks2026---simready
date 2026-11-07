@@ -1,0 +1,29 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>dronehacks_pathplan</name>
+  <version>0.1.0</version>
+  <description>
+    DroneHacks 2026 team node: the skybeta competitor contract (/skybeta/state,
+    /visual_slam/tracking/odometry in; /skybeta/setpoint/pose out) flying the course
+    with an online Theta* planner on a depth-corrected map of the published layout.
+    Forked from competitor_example.
+  </description>
+  <maintainer email="jolieznli@gmail.com">jolie</maintainer>
+  <license>Apache-2.0</license>
+
+  <exec_depend>rclpy</exec_depend>
+  <exec_depend>geometry_msgs</exec_depend>
+  <exec_depend>nav_msgs</exec_depend>
+  <exec_depend>sensor_msgs</exec_depend>
+  <exec_depend>std_msgs</exec_depend>
+  <exec_depend>skybeta_flight_interface</exec_depend>
+  <exec_depend>launch</exec_depend>
+  <exec_depend>launch_ros</exec_depend>
+  <exec_depend>python3-numpy</exec_depend>
+  <exec_depend>python3-scipy</exec_depend>
+  <exec_depend>python3-yaml</exec_depend>
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>
