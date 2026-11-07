@@ -168,3 +168,17 @@ def test_path_commitment_switches_when_the_route_is_blocked():
 def test_unknown_planner_rejected(bad):
     with pytest.raises(ValueError):
         run_mission(arena(), arena(), SPEC, ENV, GOAL, START, 0.0, MissionConfig(planner=bad))
+
+
+def test_goal_pocket_is_entered_only_across_the_line():
+    """Front of the line blocked (phantom walls in the first corridor), a way round behind it
+    open: the planner must not slip into the goal pocket from behind ("goal without crossing")."""
+    from pathplan.online import OnlinePlanner, PlannerConfig
+    occ = arena()
+    occ = box(occ, -1.5, -.6, -.05, .05)            # partition with an opening at x > -0.6 ...
+    occ = box(occ, -.6, .9, .45, .55)               # ... and a wall across the front of the line
+    line = [Checkpoint("line", np.array([-1.0, .1]), np.array([0.0, 1.0]), .35, 1)]
+    planner = OnlinePlanner(occ, SPEC, ENV, line, PlannerConfig(lookahead_m=0))
+    cmd = planner.update(np.array([-1.0, -.8]), np.pi / 2)
+    # the only route that reaches the pocket goes round the partition's end and in from behind
+    assert cmd.mode == "turn" and cmd.reason == "look around", cmd

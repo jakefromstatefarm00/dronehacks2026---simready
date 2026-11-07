@@ -228,3 +228,61 @@ def test_find_topic_suffix_and_ambiguity():
     assert find_topic(g, "vehicle_command", "px4_msgs/msg/VehicleCommand", "in") == "/fmu/in/vehicle_command"
     g.append(("/fmu/out/vehicle_status", ["px4_msgs/msg/VehicleStatus"]))
     assert find_topic(g, "vehicle_status", "px4_msgs/msg/VehicleStatus") is None
+
+
+def test_no_planning_on_the_ground():
+    """Depth from 5 cm up made phantom walls and burnt the look-around budget before takeoff."""
+    m = Mission(FakePlanner(), MissionConfig(execute=True))
+    run_until(m, "WAIT_OFFBOARD", 0.0)
+    assert not m.planning_allowed() and m.plan() is None and m.planner.calls == 0
+
+
+def test_offboard_and_arm_requests_are_repeated():
+    m = Mission(FakePlanner(), MissionConfig(execute=True))
+    t, outs = run_until(m, "WAIT_OFFBOARD", 0.0)
+    sent = [o.command.command for o in (m.tick(tel(t + .05 * i)) for i in range(1, 50)) if o.command]
+    assert sent.count(CMD_DO_SET_MODE) == 2                         # re-sent each second until FAILED at 3 s
+
+
+def test_land_is_repeated_until_px4_is_landing():
+    m, t = airborne_mission(max_flight_s=1.0)
+    out = m.tick(tel(t + 2.0, **AIR))
+    assert m.state == "LAND" and out.command.command == CMD_NAV_LAND
+    again = [m.tick(tel(t + 2.0 + .1 * i, **AIR)).command for i in range(1, 25)]
+    assert sum(c is not None and c.command == CMD_NAV_LAND for c in again) == 2       # PX4 not landing yet
+    quiet = [m.tick(tel(t + 5.0 + .1 * i, **{**AIR, "nav_state": 18})).command for i in range(20)]
+    assert all(c is None for c in quiet)                                              # AUTO_LAND seen
+
+
+def test_takeoff_timeout_accepts_near_altitude():
+    m = Mission(FakePlanner(after=1000), MissionConfig(execute=True))
+    t, _ = run_until(m, "WAIT_OFFBOARD", 0.0)
+    t, _ = run_until(m, "TAKEOFF", t, nav_state=NAV_STATE_OFFBOARD, arming_state=ARMING_STATE_ARMED)
+    low = {**AIR, "position_ned": (0.0, 0.0, -.68)}                 # 0.73 m: 0.17 m short, never "at altitude"
+    t, _ = run_until(m, "NAVIGATE", t, limit=15.0, **low)
+    assert "near altitude" in m.events[-1]["note"]
+
+
+def test_taken_over_says_failsafe():
+    m, t = airborne_mission()
+    for i in range(1, 15):
+        m.tick(tel(t + .05 * i, **{**AIR, "nav_state": 4, "failsafe": True, "user_intention": NAV_STATE_OFFBOARD}))
+    assert m.state == "TAKEN_OVER" and "PX4 failsafe" in m.events[-1]["note"]
+
+
+def test_carrot_is_pulled_in_at_corners():
+    """PX4 flies straight at the setpoint: round a corner the 0.5 m carrot's chord must not
+    cross the keep-out."""
+    from flyx.fly_pathplan import safe_carrot_path
+    from pathplan.world import GridSpec
+    spec = GridSpec(half_size=1.5, resolution=.05)
+    cost = np.ones((spec.n, spec.n))
+    cost[30:, 30:] = np.inf                                    # keep-out: x > 0 and y > 0
+    xy = np.array([.2, -.1])
+    path = np.array([xy, [-.1, -.1], [-.1, .4]])               # left, then up round the corner at (0, 0)
+    chord_target = np.array([-.1, .1])                         # 0.5 m along: its chord crosses x, y > 0
+    out = safe_carrot_path(cost, spec, xy, path, .5)
+    assert len(out) == 2 and np.allclose(out[0], xy)
+    assert not np.allclose(out[1], chord_target) and out[1][1] < 0   # pulled back before the corner
+    straight = np.array([xy, [.2, -.8]])                       # nothing in the way: the full 0.5 m
+    assert np.allclose(safe_carrot_path(cost, spec, xy, straight, .5)[1], [.2, -.6])

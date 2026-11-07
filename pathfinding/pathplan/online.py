@@ -104,6 +104,7 @@ class OnlinePlanner:
         self.cleared, self.events, self.plan_times = [], [], []
         self.stats = dict(expansions=0, replans=0, plan_calls=0, escapes=0)
         self.pos = self.yaw = None
+        self.observations = 0                      # depth frames integrated
         self.status = "active"                     # active | done | failed
         self.index = 0
         self._near = env.hard + env.soft_margin
@@ -115,6 +116,7 @@ class OnlinePlanner:
         """Integrate one depth observation (cells from DepthCamera or depth_projection)."""
         if not self.sensing:
             return
+        self.observations += 1
         changed = self.belief.integrate(free, hit, behind)
         if changed is None:
             return
@@ -145,14 +147,14 @@ class OnlinePlanner:
     def _start_checkpoint(self):
         self.router.reset()
         self.poly, self.dirty, self.looked, self.optimistic, self.since_plan = None, True, 0.0, False, 0.0
+        self._look_prev, self._look_calls, self._look_target, self._look_mark = None, 0, None, None
         cp = self.checkpoint
         if cp is None:
             self.status = "done"
             return
         self.trusted = self._near_line(cp, .5)               # checkpoint structure is never doubted
-        self.goal = self._snap_goal(self.belief.cost, cp)
-        if self.goal is None:
-            self._fail("no goal cell")
+        self.fence = self._fence(cp)
+        self.goal = self._snap_goal(self.belief.cost, cp)        # None: _decide looks for one
 
     def _fail(self, why):
         self.status = "failed"
@@ -196,13 +198,12 @@ class OnlinePlanner:
             self.poly, self.dirty = None, True
             return Command("move", np.array([self.pos, target]), self.yaw, "escape")
 
-        if not np.isfinite(cost[self.goal]):
+        if self.goal is None or not np.isfinite(cost[self.goal]):
             goal = self._snap_goal(cost, self.checkpoint)
             if goal is None and self.optimistic:
                 goal = self._snap_goal(relaxed, self.checkpoint)
             if goal is None:
-                self._fail("no goal cell")
-                return Command("failed", reason="no goal cell")
+                return self._stuck("no goal cell")
             self.goal = goal
             self.router.reset()
             self.dirty = True
@@ -212,6 +213,7 @@ class OnlinePlanner:
         if self.dirty or self.poly is None or len(self.poly) < 2:
             self.since_plan, self.dirty = 0.0, False
             t = time.perf_counter()
+            cost, relaxed = self._fenced(cost, here), self._fenced(relaxed, here)
             cells, ex = self.router.plan(cost, here, self.goal)
             if cells:
                 self.optimistic = False
@@ -222,21 +224,8 @@ class OnlinePlanner:
             self.stats["expansions"] += ex
             self.stats["plan_calls"] += 1
             if not cells:
-                # 1) look around once, sensing; 2) doubt unconfirmed published walls; 3) give up
-                if self.looked < 2 * np.pi:
-                    if self.looked == 0:
-                        self._event("look around")
-                    turn = np.deg2rad(cfg.turn_step_deg)
-                    self.looked += turn
-                    self.dirty = True
-                    return Command("turn", yaw=self.yaw + turn, reason="look around")
-                if not self.optimistic:
-                    self.optimistic, self.dirty = True, True
-                    self._event("doubt unconfirmed map")
-                    return self._decide()
-                self._fail("no path")
-                return Command("failed", reason="no path")
-            self.looked = 0.0
+                return self._stuck("no path")
+            self.looked, self._look_prev, self._look_calls, self._look_target = 0.0, None, 0, None
             # start at the true position; a one-cell plan (already in the goal cell) still
             # flies to the cell centre instead of stalling
             new_poly = np.vstack([self.pos, spec.to_xy(np.array(cells[1:] or cells[-1:]))])
@@ -253,6 +242,39 @@ class OnlinePlanner:
             turn = np.sign(off) * min(abs(off), np.deg2rad(cfg.turn_step_deg))
             return Command("turn", yaw=self.yaw + turn, reason="look before moving")
         return Command("move", self.poly, want)
+
+    def _stuck(self, why):
+        """No route or no free goal cell: 1) look around once, sensing (a phantom obstacle from
+        a misplaced depth frame is cleared when it is seen again); 2) doubt unconfirmed published
+        walls; 3) give up.  "no goal cell" used to fail at once, which landed the drone offline
+        on phantoms that one more look would have cleared."""
+        # count the heading change actually seen, not the calls: a real vehicle turns slower
+        # than we ask (5 calls/s at 15 deg each would "finish" before PX4 had turned 90 deg)
+        if self._look_prev is not None:
+            self.looked += abs(_wrap(self.yaw - self._look_prev))
+        self._look_prev, self._look_calls = self.yaw, self._look_calls + 1
+        if self.looked < 2 * np.pi and self._look_calls <= 200:      # cap: in case it cannot turn
+            if self._look_calls == 1:
+                self._event("look around")
+                self.events[-1]["why"] = why
+            self.dirty = True
+            # step, hold until a depth frame has been taken at this heading, step again: frames
+            # taken mid-turn are the ones a slightly late pose misplaces (the node drops them)
+            step = np.deg2rad(self.cfg.turn_step_deg)
+            if self._look_target is None:
+                self._look_target, self._look_mark = self.yaw + step, None
+            elif abs(_wrap(self._look_target - self.yaw)) < np.deg2rad(4):
+                if self._look_mark is None:
+                    self._look_mark = self.observations
+                elif self.observations > self._look_mark or not self.sensing:
+                    self._look_target, self._look_mark = self._look_target + step, None
+            return Command("turn", yaw=self._look_target, reason="look around")
+        if not self.optimistic:
+            self.optimistic, self.dirty = True, True
+            self._event("doubt unconfirmed map")
+            return self._decide()
+        self._fail(why)
+        return Command("failed", reason=why)
 
     def _commit(self, cost, new_poly):
         """Path commitment: keep the current route unless it is blocked, ends elsewhere, or the
@@ -284,6 +306,29 @@ class OnlinePlanner:
 
     def _snap_goal(self, cost, cp):
         return snap_goal(cost, self.spec, self.env, cp, self.cfg.goal_beyond)
+
+    def _fence(self, cp, width=.35):
+        """Cells around the far side of a line checkpoint's goal pocket (its two flanks and its
+        back). Planning treats them as blocked, so the only way into the pocket is across the
+        line. Without it, phantom walls in the first corridor (fake-PX4 runs) sent the route
+        round through the maze into the pocket from behind -> "goal without crossing" -> land.
+        None for the pad and for the chicane (Gate B is a legitimate other way in)."""
+        if cp.kind == "pad" or cp.other_route:
+            return None
+        d = self._grid_xy - cp.centre
+        along = d @ cp.normal
+        lateral = np.abs(d @ np.array([-cp.normal[1], cp.normal[0]]))
+        depth = self.env.radius + .6                         # the goal pocket's far edge (snap_goal)
+        flanks = (along >= 0) & (along <= depth + width) & (lateral > cp.half_width) & (lateral <= cp.half_width + width)
+        back = (along > depth) & (along <= depth + width) & (lateral <= cp.half_width + width)
+        return flanks | back
+
+    def _fenced(self, cost, here):
+        if cost is None or self.fence is None or self.fence[here] or self.router.kind == "dstar":
+            return cost
+        cost = cost.copy()
+        cost[self.fence] = inf
+        return cost
 
     def _near_line(self, cp, dist):
         """Cells within ``dist`` of checkpoint ``cp``'s line extended ``dist`` past each end."""

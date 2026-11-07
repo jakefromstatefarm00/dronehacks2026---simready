@@ -22,7 +22,7 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
-from .px4_link import (ARMING_STATE_ARMED, ARMING_STATE_DISARMED, NAV_STATE_OFFBOARD, POSE_FRAME_NED, Command,
+from .px4_link import (ARMING_STATE_ARMED, ARMING_STATE_DISARMED, NAV_STATE_AUTO_LAND, NAV_STATE_OFFBOARD, POSE_FRAME_NED, Command,
                        course_to_ned_setpoint, odom_to_course, yaw_from_q_ned)
 
 
@@ -45,6 +45,8 @@ class Telemetry:
     local_t: float | None = None
     xy_valid: bool = False
     z_valid: bool = False
+    failsafe: bool = False                 # vehicle_status: PX4 failsafe active
+    user_intention: int = 0                # vehicle_status.nav_state_user_intention
 
 
 @dataclass
@@ -74,6 +76,10 @@ class MissionConfig:
     launch_xy: tuple = (-2.515, .914)      # launch mark, course frame
     launch_heading: float = float(np.pi / 2)   # vehicle heading on the mark, course frame (facing +y)
     launch_body_agl: float = .05           # body origin above the floor when sitting on the mark
+    resend_s: float = 1.0                  # repeat Offboard / arm / Land until PX4 shows it (lossy link)
+    takeoff_timeout_s: float = 10.0        # then accept being within takeoff_loose_m of the altitude
+    takeoff_loose_m: float = .25
+    plan_above_m: float = .5               # no mapping/planning below this (depth from the floor)
 
 
 class Mission:
@@ -91,6 +97,7 @@ class Mission:
         self._t_takeoff = None
         self._sim_takeoff = None
         self._land_sent = False
+        self._last_command_t = None
         self._offboard_lost_since = None
         self.pose_course = None            # (xyz, yaw, rotation) for depth projection
 
@@ -133,13 +140,29 @@ class Mission:
     def plan(self):
         """Advance the planner from the latest pose; cheap to call, may take ~0.1-0.5 s."""
         from pathplan.ros_node import target_from_command
-        if self.pose_course is None or self.state in ("LAND", "DONE", "FAILED", "TAKEN_OVER"):
+        if not self.planning_allowed():
             return None
         xyz, yaw, _ = self.pose_course
         cmd = self.planner.update(xyz[:2], yaw)
         self.target = target_from_command(cmd, xyz[:2], yaw, self.cfg.carrot_m)
         self.planner_status = cmd.mode
         return cmd
+
+    def planning_allowed(self):
+        """Map and plan only in flight (or in shadow): on the ground the camera sits 5 cm up and
+        each "look around" call spent turning budget the vehicle never used."""
+        if self.pose_course is None:
+            return False
+        if self.state in ("NAVIGATE", "SHADOW"):
+            return True
+        return self.state == "TAKEOFF" and self.pose_course[0][2] > self.cfg.plan_above_m
+
+    def _resend(self, now):
+        """True once every resend_s: VehicleCommand goes over a best-effort link and may be lost."""
+        if self._last_command_t is None or now - self._last_command_t >= self.cfg.resend_s:
+            self._last_command_t = now
+            return True
+        return False
 
     def observe(self, free, hit, behind):
         if self.frame is not None:
@@ -180,17 +203,19 @@ class Mission:
                 return Output(self.state)
             if now - self._t_state >= c.stream_before_offboard_s:
                 self._go("WAIT_OFFBOARD", now)
+                self._last_command_t = now
                 return Output(self.state, self._hold_here(tel), Command.offboard(), "requesting Offboard")
             return Output(self.state, self._hold_here(tel), note="streaming hold setpoints")
 
         if self.state == "WAIT_OFFBOARD":
             if tel.nav_state == NAV_STATE_OFFBOARD:
                 self._go("WAIT_ARM", now)
+                self._last_command_t = now
                 return Output(self.state, self._hold_here(tel), Command.arm(), "Offboard active, requesting arm")
             if now - self._t_state > c.ack_timeout_s:
                 self._go("FAILED", now, "PX4 did not enter Offboard")
                 return Output(self.state)
-            return Output(self.state, self._hold_here(tel))
+            return Output(self.state, self._hold_here(tel), Command.offboard() if self._resend(now) else None)
 
         if self.state == "WAIT_ARM":
             if tel.arming_state == ARMING_STATE_ARMED:
@@ -202,7 +227,7 @@ class Mission:
                 self._go("FAILED", now, "PX4 refused to arm")
                 return Output(self.state)
             else:
-                return Output(self.state, self._hold_here(tel))
+                return Output(self.state, self._hold_here(tel), Command.arm() if self._resend(now) else None)
 
         if self.state in ("TAKEOFF", "NAVIGATE"):
             guard = self._airborne_guard(tel, healthy)
@@ -211,8 +236,11 @@ class Mission:
             if self.state == "TAKEOFF":
                 yaw = self.pose_course[1]
                 sp = self._course_setpoint(self._takeoff_xy, yaw)
-                if abs(self.pose_course[0][2] - c.altitude) < c.takeoff_tolerance_m:
+                off = abs(self.pose_course[0][2] - c.altitude)
+                if off < c.takeoff_tolerance_m:
                     self._go("NAVIGATE", now, "at altitude")
+                elif now - self._t_state > c.takeoff_timeout_s and off < c.takeoff_loose_m:
+                    self._go("NAVIGATE", now, f"near altitude after {c.takeoff_timeout_s:.0f} s ({off:.2f} m off)")
                 return Output(self.state, sp, note="takeoff")
             if self.planner_status == "done":
                 return self._land(now, "landing pad reached")
@@ -225,6 +253,9 @@ class Mission:
         if self.state == "LAND":
             if tel.landed and tel.arming_state == ARMING_STATE_DISARMED:
                 self._go("DONE", now, "landed and disarmed")
+                return Output(self.state)
+            if tel.nav_state != NAV_STATE_AUTO_LAND and not tel.landed and self._resend(now):
+                return Output(self.state, command=Command.land(), note="repeating Land")
             return Output(self.state)
 
         return Output(self.state)
@@ -234,7 +265,10 @@ class Mission:
         if tel.nav_state != NAV_STATE_OFFBOARD:
             self._offboard_lost_since = self._offboard_lost_since if self._offboard_lost_since is not None else now
             if now - self._offboard_lost_since > c.offboard_loss_s:
-                self._go("TAKEN_OVER", now, f"PX4 left Offboard (nav_state {tel.nav_state}); not commanding")
+                why = ("PX4 failsafe" if tel.failsafe else
+                       "mode changed by someone else" if tel.user_intention != NAV_STATE_OFFBOARD else "unknown")
+                self._go("TAKEN_OVER", now, f"PX4 left Offboard: {why} (nav_state {tel.nav_state}, "
+                                            f"requested {tel.user_intention}, failsafe {tel.failsafe}); not commanding")
                 return Output(self.state)
         else:
             self._offboard_lost_since = None
@@ -250,6 +284,7 @@ class Mission:
 
     def _land(self, now, why):
         self._go("LAND", now, why)
+        self._last_command_t = now
         if not self._land_sent:
             self._land_sent = True
             return Output(self.state, command=Command.land(), note=why)

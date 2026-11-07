@@ -75,6 +75,22 @@ work and shared the GIL with the PX4 callbacks. Reproduced with `FAKE_DEPTH=1 fa
   checkpoint 1 ("no path");
 - local_position (validity flags only) may be 2 s old; odometry still 0.3 s.
 
+**Run 5** took off, then PX4 left Offboard 0.8 s into NAVIGATE (TAKEN_OVER, cause not logged).
+Review + fixes, verified on 6/6 fake-PX4 flights with ray-cast depth (3 idle, 3 with half the
+CPU busy) and 13/13 offline courses:
+- setpoint loop on a steady clock and timestamps in PX4's own time base (sim-clock stalls or
+  slow sim time make PX4 see the Offboard stream as stale); TAKEN_OVER now says *why*
+  (PX4 failsafe vs someone else changed mode) and PX4 mode changes are journalled (`px4_mode`);
+- depth that a slightly wrong pose invents is dropped (returns within 15 cm of a published
+  wall, published walls seen "free", frames taken while turning > 0.5 rad/s): offline the course
+  now completes with 0.3 s of pose error, before it failed at 0.1 s;
+- "look around" counts real heading change and steps 15 deg per depth frame; "no goal cell"
+  looks around and doubts the map before giving up; a line checkpoint's goal pocket can only be
+  entered across the line (no back route via the maze);
+- the setpoint carrot is pulled in so the straight line to it stays out of the keep-out;
+- no mapping/planning below 0.5 m; Offboard/arm/Land re-sent every 1 s until PX4 shows them;
+  takeoff accepts within 0.25 m after 10 s; an exception in any callback lands the vehicle.
+
 Tested: `tests/test_flyx_mission.py`; full ROS wiring in Jazzy against `fake_px4.py`
 (status at the lab's slow rates): course completed, 3 commands (Offboard, arm, land);
 shadow + Ctrl-C sends nothing; `--execute` + SIGTERM mid-flight sends Land.

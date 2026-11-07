@@ -144,3 +144,18 @@ def decode_depth_image(data, width, height, encoding, step=None):
         raise ValueError(f"unsupported depth encoding {encoding!r} (expected 16UC1 or 32FC1)")
     img[img <= 0] = np.nan
     return img
+
+
+def drop_misregistered(free, hit, behind, prior, near_wall):
+    """Remove depth evidence that a slightly wrong pose (latency, turning) would invent.
+
+    ``prior`` is the published occupancy; ``near_wall`` the free cells within a few cm of it.
+    A return there is the published wall seen a little off, not a new obstacle; a published
+    wall cell seen "free" is a ray that slipped past the wall's edge.  Without this, 0.1 s of
+    pose lag at 1 rad/s turned 321 cells of corridor into phantom walls (offline replay) and
+    the planner ran out of paths.  New obstacles away from walls are kept; walls that really
+    moved are still handled by OnlinePlanner's "doubt unconfirmed map" step.
+    """
+    def keep(cells, mask):
+        return cells[~mask[cells[:, 0], cells[:, 1]]] if len(cells) else cells
+    return keep(free, prior), keep(hit, prior | near_wall), keep(behind, prior | near_wall)

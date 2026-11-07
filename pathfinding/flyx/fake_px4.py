@@ -136,9 +136,9 @@ class FakePX4(Node):
         self.create_timer(1 / 13, self.publish_depth)
 
     def publish_depth(self):
+        stamp = self.get_clock().now().to_msg()      # capture time, like a real camera (before rendering)
         depth = render_depth(self.occ, self.spec, self.pos, self.yaw, self.K, self.W, self.H)
         mm = np.where(np.isfinite(depth) & (depth < 10), depth * 1000, 0).astype("<u2")
-        stamp = self.get_clock().now().to_msg()
         img = self.Image(height=self.H, width=self.W, encoding="16UC1", step=self.W * 2, data=mm.tobytes())
         img.header.stamp, img.header.frame_id = stamp, "oak_left"
         self.depth_pub.publish(img)
@@ -170,7 +170,9 @@ def render_depth(occ, spec, pos_ned, yaw_ned, K, W, H):
 
 
 def main():
-    rclpy.init()
+    import signal
+    signal.signal(signal.SIGTERM, lambda *_: (_ for _ in ()).throw(KeyboardInterrupt))   # save the log on TERM
+    rclpy.init(signal_handler_options=__import__("rclpy.signals", fromlist=["x"]).SignalHandlerOptions.NO)
     node = FakePX4()
     try:
         rclpy.spin(node)

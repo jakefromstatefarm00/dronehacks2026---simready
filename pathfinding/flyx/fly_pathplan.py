@@ -19,23 +19,30 @@ from __future__ import annotations
 import argparse
 from collections import deque
 import json
+import math
 import signal
 from pathlib import Path
 import sys
 import threading
 import time
 
+import numpy as np
+
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from flyx.mission import Mission, MissionConfig, Telemetry      # noqa: E402
-from flyx.px4_link import NAN3, find_topic, odom_to_course      # noqa: E402
+from flyx.px4_link import NAN3, find_topic, odom_to_course, yaw_from_q_ned  # noqa: E402
+
+WALL_SNAP_M = .15       # depth returns this close to a published wall are that wall (pose error)
+MAX_TURN_RATE = .5      # rad/s: depth frames taken while turning faster are dropped (pose error)
 
 OUT_TOPICS = {                      # basename -> px4_msgs type (discovered with optional _vN suffix)
     "odom": ("vehicle_odometry", "VehicleOdometry"),
     "status": ("vehicle_status", "VehicleStatus"),
     "land": ("vehicle_land_detected", "VehicleLandDetected"),
     "local": ("vehicle_local_position", "VehicleLocalPosition"),
+    "failsafe_flags": ("failsafe_flags", "FailsafeFlags"),     # optional: the lab may not export it
 }
 
 
@@ -59,14 +66,31 @@ def parse_args(argv=None):
     return ap.parse_args(argv)
 
 
-def planner_process(conn, planner_name, altitude, camera_offset, pitch_down_deg):
+def safe_carrot_path(cost, spec, xy, path, carrot_m):
+    """[xy, setpoint]: the point carrot_m along the plan, pulled in until the straight line to
+    it stays out of the keep-out. PX4 flies straight at the setpoint, so a far carrot round a
+    bend cuts the corner into the wall (fake-PX4 runs: "escape" 18 cm from the net)."""
+    from pathplan.grid_search import line_cost
+    from pathplan.online import _point_along
+    cell = lambda p: np.clip((np.asarray(p)[::-1] + spec.half_size) / spec.resolution - .5, 0, cost.shape[0] - 1)
+    for d in (carrot_m, .35, .25, .15):
+        target = _point_along(path, d)
+        if np.isfinite(line_cost(cost, cell(xy), [cell(target)])[0]):
+            return np.array([xy, target])
+    return np.array([xy, _point_along(path, .1)])
+
+
+def planner_process(conn, planner_name, altitude, camera_offset, pitch_down_deg, carrot_m):
     """The planner and depth projection, in their own process: both are pure-Python CPU work
     and, sharing the ROS process's GIL, stalled the PX4 callbacks for 0.4 s at a time (FlyX run
     4: "odometry stale (0.42s)" in TAKEOFF; reproduced on a loaded CPU with simulated depth)."""
     signal.signal(signal.SIGINT, signal.SIG_IGN)          # the parent handles Ctrl-C and lands
-    from pathplan.depth_projection import CameraMount, Intrinsics, decode_depth_image, project_depth
+    from pathplan.depth_projection import (CameraMount, Intrinsics, decode_depth_image, drop_misregistered,
+                                           project_depth)
     from pathplan.ros_node import build_planner
+    from pathplan.world import clearance
     planner, spec, env, prior = build_planner(planner_name, altitude)
+    near_wall = (clearance(prior, spec) < WALL_SNAP_M) & ~prior
     mount = CameraMount(offset=tuple(camera_offset), pitch_down_deg=pitch_down_deg)
     conn.send("ready")
     while True:
@@ -78,10 +102,13 @@ def planner_process(conn, planner_name, altitude, camera_offset, pitch_down_deg)
         if frame is not None:
             data, width, height, encoding, step, k, xyz, rotation = frame
             depth = decode_depth_image(data, width, height, encoding, step)
-            planner.observe(*project_depth(depth, Intrinsics.from_k(k, width, height), xyz, rotation, spec,
-                                           altitude=altitude, half_height=env.half_height + env.tracking_margin,
-                                           mount=mount, expected=prior))
+            cells = project_depth(depth, Intrinsics.from_k(k, width, height), xyz, rotation, spec,
+                                  altitude=altitude, half_height=env.half_height + env.tracking_margin,
+                                  mount=mount, expected=prior)
+            planner.observe(*drop_misregistered(*cells, prior, near_wall))
         cmd = planner.update(xy, yaw)
+        if cmd.mode == "move" and cmd.path is not None and len(cmd.path) >= 2:
+            cmd.path = safe_carrot_path(planner.belief.cost, spec, np.asarray(xy, float), cmd.path, carrot_m)
         conn.send((cmd, planner.events, planner.cleared, 1e3 * (time.perf_counter() - t0)))
 
 
@@ -94,7 +121,8 @@ class PlannerProcess:
         ctx = mp.get_context("fork")
         self.conn, child = ctx.Pipe()
         self.proc = ctx.Process(target=planner_process, daemon=True,
-                                args=(child, a.planner, a.altitude, a.camera_offset, a.camera_pitch_down_deg))
+                                args=(child, a.planner, a.altitude, a.camera_offset, a.camera_pitch_down_deg,
+                                      a.carrot))
         self.proc.start()
         if self.conn.recv() != "ready":
             raise RuntimeError("planner process did not start")
@@ -133,6 +161,7 @@ def main(argv=None):
     planner = PlannerProcess(a)          # first: it forks
     import rclpy
     from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
+    from rclpy.clock import Clock, ClockType
     from rclpy.executors import MultiThreadedExecutor
     from rclpy.node import Node
     from rclpy.parameter import Parameter
@@ -162,7 +191,10 @@ def main(argv=None):
             self.set_parameters([Parameter("use_sim_time", value=not a.wall_clock)])
             self.tel = Telemetry(now=0.0)
             self.poses = deque(maxlen=300)      # (ROS time, NED position, q): ~3 s of odometry
-            self.depth_stats = {"frames": 0, "matched": 0, "fallback": 0}
+            self.poses_lock = threading.Lock()  # odometry thread appends, depth thread reads
+            self.depth_stats = {"frames": 0, "matched": 0, "fallback": 0, "turning": 0, "max_odom_delay_s": 0.0}
+            self.failsafe_flags = None
+            self.offsets = deque(maxlen=200)    # arrival (ROS clock) - PX4 sample time, last ~2 s
             self.intr = None
             self.subs = {}
             # PX4 telemetry, depth (slow: ~50-100 ms per frame), planning and control each get their
@@ -170,8 +202,12 @@ def main(argv=None):
             sensors, depth_group, planning, control = (MutuallyExclusiveCallbackGroup() for _ in range(4))
             self.groups = sensors
             self.create_timer(1.0, self.discover, callback_group=sensors)
-            self.create_timer(.2, self.on_plan, callback_group=planning)
-            self.create_timer(.05, self.on_control, callback_group=control)
+            # steady clock: a stalled or slow /clock must not stop the setpoint stream (PX4 drops
+            # out of Offboard after COM_OF_LOSS_T without it)
+            steady = Clock(clock_type=ClockType.STEADY_TIME)
+            self.create_timer(.2, self.on_plan, callback_group=planning, clock=steady)
+            self.create_timer(.05, self.on_control, callback_group=control, clock=steady)
+            self.px4_ref = None                 # (latest odometry timestamp us, monotonic arrival)
             self.status_pub = self.create_publisher(String, "~/status", 10)
             if a.execute:
                 self.mode_pub = self.create_publisher(px4.OffboardControlMode, "/fmu/in/offboard_control_mode",
@@ -213,14 +249,25 @@ def main(argv=None):
             t, tel = time.monotonic(), self.tel        # arrival time, monotonic (see Telemetry)
             if key == "odom":
                 tel.odom_t, tel.position_ned, tel.q_ned_frd = t, tuple(msg.position), tuple(msg.q)
-                self.poses.append((self.now(), tel.position_ned, tel.q_ned_frd))
+                self.px4_ref = (int(msg.timestamp), t)
+                with self.poses_lock:
+                    self.poses.append((self.sample_time(msg), tel.position_ned, tel.q_ned_frd))
                 tel.pose_frame = msg.pose_frame
             elif key == "status":
+                if msg.nav_state != tel.nav_state or bool(msg.failsafe) != tel.failsafe:
+                    log({"kind": "px4_mode", "t": self.now(), "nav_state": int(msg.nav_state),
+                         "requested": int(msg.nav_state_user_intention), "failsafe": bool(msg.failsafe),
+                         "user_took_over": bool(msg.failsafe_and_user_took_over),
+                         "arming_state": int(msg.arming_state), "failsafe_flags": self.failsafe_flags})
                 tel.status_t, tel.arming_state, tel.nav_state = t, msg.arming_state, msg.nav_state
+                tel.failsafe, tel.user_intention = bool(msg.failsafe), int(msg.nav_state_user_intention)
             elif key == "land":
                 tel.landed_t, tel.landed = t, bool(msg.landed)
             elif key == "local":
                 tel.local_t, tel.xy_valid, tel.z_valid = t, bool(msg.xy_valid), bool(msg.z_valid)
+            elif key == "failsafe_flags":            # which failsafe condition is set (if exported)
+                self.failsafe_flags = [f for f in msg.get_fields_and_field_types()
+                                       if f != "timestamp" and getattr(msg, f) is True]
 
         def on_info(self, msg):
             if self.intr is None:
@@ -228,24 +275,44 @@ def main(argv=None):
                 log({"kind": "camera_info", "k": list(msg.k), "width": msg.width, "height": msg.height,
                      "frame_id": msg.header.frame_id})
 
+        def sample_time(self, msg):
+            """When the odometry was measured, on the ROS clock. Its arrival time can lag by the
+            time it sat in our queue (100s of ms on a loaded CPU), which misplaces depth during
+            turns. PX4's own sample time is on PX4's clock: map it with the smallest
+            arrival - sample offset of the last ~2 s (the least-delayed message)."""
+            px4_t = (msg.timestamp_sample or msg.timestamp) * 1e-6
+            arrival = self.now()
+            self.offsets.append(arrival - px4_t)
+            t = px4_t + min(self.offsets)
+            self.depth_stats["max_odom_delay_s"] = max(self.depth_stats["max_odom_delay_s"], round(arrival - t, 3))
+            return t
+
         def pose_at(self, stamp):
-            """Course pose when the image was taken (odometry nearest its header stamp, same ROS
-            clock). Projecting with the latest pose instead smears walls sideways during turns."""
-            if stamp > 0 and self.poses:
-                t, pos, q = min(self.poses, key=lambda p: abs(p[0] - stamp))
+            """(course pose when the image was taken, yaw rate then): odometry nearest its header
+            stamp, same ROS clock. Projecting with the latest pose smears walls during turns."""
+            with self.poses_lock:
+                poses = list(self.poses)
+            if stamp > 0 and poses:
+                t, pos, q = min(poses, key=lambda p: abs(p[0] - stamp))
                 if abs(t - stamp) <= .05:
                     self.depth_stats["matched"] += 1
-                    return odom_to_course(mission.frame, pos, q)
+                    t0, _, q0 = min(poses, key=lambda p: abs(p[0] - (stamp - .15)))
+                    dyaw = yaw_from_q_ned(q) - yaw_from_q_ned(q0)
+                    rate = abs(math.atan2(math.sin(dyaw), math.cos(dyaw))) / max(t - t0, .05)
+                    return odom_to_course(mission.frame, pos, q), rate
             self.depth_stats["fallback"] += 1           # unstamped / other clock: latest pose
-            return mission.pose_course
+            return mission.pose_course, 0.0
 
         def on_depth(self, msg):
-            if mission.pose_course is None or mission.frame is None or self.intr is None:
+            if mission.frame is None or self.intr is None or not mission.planning_allowed():
                 return
             self.depth_stats["frames"] += 1
             if self.depth_stats["frames"] % 100 == 1:
                 log({"kind": "depth", "t": self.now(), **self.depth_stats})
-            xyz, _, rotation = self.pose_at(msg.header.stamp.sec + msg.header.stamp.nanosec * 1e-9)
+            (xyz, _, rotation), rate = self.pose_at(msg.header.stamp.sec + msg.header.stamp.nanosec * 1e-9)
+            if rate > MAX_TURN_RATE:
+                self.depth_stats["turning"] += 1
+                return
             # the planner process takes the latest frame at its next step (<= 5 Hz)
             planner.give_frame((bytes(msg.data), msg.width, msg.height, msg.encoding, msg.step, self.intr,
                                 xyz, rotation))
@@ -272,7 +339,8 @@ def main(argv=None):
             self.tel.now, self.tel.sim_now = mono, sim
             out = mission.tick(self.tel)
             if out.state != self.last_state:
-                self.get_logger().info(f"state {self.last_state} -> {out.state} {out.note}")
+                note = mission.events[-1]["note"] if mission.events and mission.events[-1]["to"] == out.state else ""
+                self.get_logger().info(f"state {self.last_state} -> {out.state} {note or out.note}")
                 log({"kind": "state", "t": sim, "state": out.state, "note": out.note,
                      "events": mission.events[-1:]})
                 self.last_state = out.state
@@ -281,7 +349,7 @@ def main(argv=None):
                 "cleared": [c["name"] for c in planner.cleared]})))
             if not a.execute:
                 return
-            us = int(self.get_clock().now().nanoseconds / 1000)
+            us = self.px4_us()
             if out.setpoint is not None:
                 mode = px4.OffboardControlMode()
                 mode.timestamp, mode.position = us, True
@@ -303,10 +371,19 @@ def main(argv=None):
                 log({"kind": "command", "t": sim, "command": out.command.command,
                      "param1": out.command.param1, "param2": out.command.param2, "state": out.state})
 
+        def px4_us(self):
+            """A timestamp in PX4's own time base (what its odometry carries), 20 ms in the past
+            so it can never read as future. Sim-time stamps run slow against PX4's clock when
+            the sim is slower than real time, and PX4 then sees our Offboard stream as stale."""
+            if self.px4_ref is None:
+                return int(self.get_clock().now().nanoseconds / 1000)
+            ts, arrival = self.px4_ref
+            return max(0, int(ts + (time.monotonic() - arrival) * 1e6) - 20_000)
+
         def land_if_airborne(self):
             if a.execute and mission.state in ("WAIT_ARM", "TAKEOFF", "NAVIGATE"):
                 cmd = px4.VehicleCommand()
-                cmd.timestamp = int(self.get_clock().now().nanoseconds / 1000)
+                cmd.timestamp = self.px4_us()
                 cmd.command, cmd.target_system, cmd.target_component = 21, 1, 1
                 cmd.source_system, cmd.source_component, cmd.from_external = 1, 1, True
                 self.cmd_pub.publish(cmd)
@@ -325,11 +402,23 @@ def main(argv=None):
     executor = MultiThreadedExecutor(num_threads=4)
     executor.add_node(node)
     # the executor spins on its own thread; the main thread only waits for the end (or Ctrl-C)
-    spinner = threading.Thread(target=executor.spin, daemon=True)
+    def spin():
+        try:
+            executor.spin()
+        except Exception:                       # a callback raised: rclpy stops the executor
+            import traceback
+            log({"kind": "error", "where": "callback", "error": traceback.format_exc()})
+            print(traceback.format_exc(), file=sys.stderr, flush=True)
+
+    spinner = threading.Thread(target=spin, daemon=True)
     spinner.start()
     try:
         while rclpy.ok() and spinner.is_alive() and mission.state not in ("DONE", "FAILED", "TAKEN_OVER"):
             time.sleep(.1)
+        if not spinner.is_alive():              # never leave the vehicle airborne without us
+            node.get_logger().error(f"executor stopped in {mission.state}; landing if airborne")
+            node.land_if_airborne()
+            time.sleep(.3)
     except KeyboardInterrupt:
         node.land_if_airborne()
         time.sleep(.3)                        # let the Land command go out before tearing down
