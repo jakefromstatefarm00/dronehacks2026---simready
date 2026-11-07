@@ -182,3 +182,16 @@ def test_goal_pocket_is_entered_only_across_the_line():
     cmd = planner.update(np.array([-1.0, -.8]), np.pi / 2)
     # the only route that reaches the pocket goes round the partition's end and in from behind
     assert cmd.mode == "turn" and cmd.reason == "look around", cmd
+
+
+def test_look_around_turns_toward_the_goal_side_first():
+    from pathplan.online import OnlinePlanner, PlannerConfig
+    occ = box(arena(), -1.5, 1.5, .2, .3)                      # wall across: no path north
+    for start_yaw, expect in ((np.pi / 2 + .5, -1), (np.pi / 2 - .5, +1)):
+        p = OnlinePlanner(occ, SPEC, ENV, GOAL, PlannerConfig(lookahead_m=0))
+        cmd = p.update(START, start_yaw)
+        assert cmd.mode == "turn" and np.sign(_wrap_test(cmd.yaw - start_yaw)) == expect, (start_yaw, cmd)
+
+
+def _wrap_test(a):
+    return float(np.arctan2(np.sin(a), np.cos(a)))

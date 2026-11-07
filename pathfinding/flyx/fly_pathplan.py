@@ -20,6 +20,7 @@ import argparse
 from collections import deque
 import json
 import math
+import os
 import signal
 from pathlib import Path
 import sys
@@ -34,7 +35,10 @@ sys.path.insert(0, str(ROOT))
 from flyx.mission import Mission, MissionConfig, Telemetry      # noqa: E402
 from flyx.px4_link import NAN3, find_topic, odom_to_course, yaw_from_q_ned  # noqa: E402
 
-WALL_SNAP_M = .15       # depth returns this close to a published wall are that wall (pose error)
+WALL_SNAP_M = .25       # depth returns this close to a published wall are that wall (pose error,
+                        # stereo noise): FlyX run 6 lost the tight passage past maze wall M1 to them
+HIT_CONFIRM = 3         # vote threshold for a new obstacle cell: +2 per frame that hits it, -1 per
+                        # frame, so it must be seen in 2 of ~3 frames (single noisy frames are ignored)
 MAX_TURN_RATE = .5      # rad/s: depth frames taken while turning faster are dropped (pose error)
 
 OUT_TOPICS = {                      # basename -> px4_msgs type (discovered with optional _vN suffix)
@@ -85,6 +89,12 @@ def planner_process(conn, planner_name, altitude, camera_offset, pitch_down_deg,
     and, sharing the ROS process's GIL, stalled the PX4 callbacks for 0.4 s at a time (FlyX run
     4: "odometry stale (0.42s)" in TAKEOFF; reproduced on a loaded CPU with simulated depth)."""
     signal.signal(signal.SIGINT, signal.SIG_IGN)          # the parent handles Ctrl-C and lands
+    # Lower CPU priority than the ROS process: FlyX run 6's control loop stalled 1.05 s when this
+    # process got busy at the start of NAVIGATE, and PX4 failsafed on offboard_control_signal_lost.
+    try:
+        os.nice(10)
+    except OSError:
+        pass
     from pathplan.depth_projection import (CameraMount, Intrinsics, decode_depth_image, drop_misregistered,
                                            project_depth)
     from pathplan.ros_node import build_planner
@@ -92,6 +102,8 @@ def planner_process(conn, planner_name, altitude, camera_offset, pitch_down_deg,
     planner, spec, env, prior = build_planner(planner_name, altitude)
     near_wall = (clearance(prior, spec) < WALL_SNAP_M) & ~prior
     mount = CameraMount(offset=tuple(camera_offset), pitch_down_deg=pitch_down_deg)
+    votes = np.zeros(prior.shape, np.int8)
+    quality = {"hits": 0, "hits_on_published_walls": 0, "hits_new_confirmed": 0, "hits_new_ignored": 0}
     conn.send("ready")
     while True:
         msg = conn.recv()
@@ -105,11 +117,25 @@ def planner_process(conn, planner_name, altitude, camera_offset, pitch_down_deg,
             cells = project_depth(depth, Intrinsics.from_k(k, width, height), xyz, rotation, spec,
                                   altitude=altitude, half_height=env.half_height + env.tracking_margin,
                                   mount=mount, expected=prior)
-            planner.observe(*drop_misregistered(*cells, prior, near_wall))
+            raw_hit = cells[1]
+            if len(raw_hit):                           # diagnostic: a wrong camera mount shows up here
+                on_wall = (prior | near_wall)[raw_hit[:, 0], raw_hit[:, 1]]
+                quality["hits"] += len(raw_hit)
+                quality["hits_on_published_walls"] += int(on_wall.sum())
+            free, hit, behind = drop_misregistered(*cells, prior, near_wall)
+            votes = np.maximum(votes - 1, 0).astype(np.int8)
+            if len(hit):
+                votes[hit[:, 0], hit[:, 1]] = np.minimum(votes[hit[:, 0], hit[:, 1]] + 2, 6)
+                known = planner.belief.occ[hit[:, 0], hit[:, 1]]
+                ok = known | (votes[hit[:, 0], hit[:, 1]] >= HIT_CONFIRM)
+                quality["hits_new_confirmed"] += int((ok & ~known).sum())
+                quality["hits_new_ignored"] += int((~ok).sum())
+                hit = hit[ok]
+            planner.observe(free, hit, behind)
         cmd = planner.update(xy, yaw)
         if cmd.mode == "move" and cmd.path is not None and len(cmd.path) >= 2:
             cmd.path = safe_carrot_path(planner.belief.cost, spec, np.asarray(xy, float), cmd.path, carrot_m)
-        conn.send((cmd, planner.events, planner.cleared, 1e3 * (time.perf_counter() - t0)))
+        conn.send((cmd, planner.events, planner.cleared, 1e3 * (time.perf_counter() - t0), quality))
 
 
 class PlannerProcess:
@@ -126,7 +152,7 @@ class PlannerProcess:
         self.proc.start()
         if self.conn.recv() != "ready":
             raise RuntimeError("planner process did not start")
-        self.events, self.cleared, self.ms = [], [], 0.0
+        self.events, self.cleared, self.ms, self.depth_quality = [], [], 0.0, {}
         self.frame, self.lock = None, threading.Lock()      # latest depth frame, from the depth callback
 
     def give_frame(self, frame):
@@ -139,7 +165,7 @@ class PlannerProcess:
             frame, self.frame = self.frame, None
         try:
             self.conn.send((xy, yaw, frame))
-            cmd, self.events, self.cleared, self.ms = self.conn.recv()
+            cmd, self.events, self.cleared, self.ms, self.depth_quality = self.conn.recv()
             return cmd
         except (EOFError, OSError):
             from pathplan.online import Command
@@ -216,6 +242,11 @@ def main(argv=None):
                                                     qos_profile_sensor_data)
                 self.cmd_pub = self.create_publisher(px4.VehicleCommand, "/fmu/in/vehicle_command",
                                                      qos_profile_sensor_data)
+            from rclpy.qos import DurabilityPolicy, QoSProfile
+            from tf2_msgs.msg import TFMessage
+            self.create_subscription(TFMessage, "/tf_static", self.on_tf_static,
+                                     QoSProfile(depth=100, durability=DurabilityPolicy.TRANSIENT_LOCAL),
+                                     callback_group=sensors)
             if a.depth_topic:
                 info = a.camera_info_topic or a.depth_topic.rsplit("/", 1)[0] + "/camera_info"
                 self.create_subscription(Image, a.depth_topic, self.on_depth, qos_profile_sensor_data,
@@ -269,6 +300,14 @@ def main(argv=None):
                 self.failsafe_flags = [f for f in msg.get_fields_and_field_types()
                                        if f != "timestamp" and getattr(msg, f) is True]
 
+        def on_tf_static(self, msg):
+            """Log the sim's static transforms once (camera mount vs our --camera-offset)."""
+            log({"kind": "tf_static", "transforms": [
+                {"parent": tr.header.frame_id, "child": tr.child_frame_id,
+                 "xyz": [tr.transform.translation.x, tr.transform.translation.y, tr.transform.translation.z],
+                 "xyzw": [tr.transform.rotation.x, tr.transform.rotation.y, tr.transform.rotation.z,
+                          tr.transform.rotation.w]} for tr in msg.transforms]})
+
         def on_info(self, msg):
             if self.intr is None:
                 self.intr = list(msg.k)
@@ -308,7 +347,7 @@ def main(argv=None):
                 return
             self.depth_stats["frames"] += 1
             if self.depth_stats["frames"] % 100 == 1:
-                log({"kind": "depth", "t": self.now(), **self.depth_stats})
+                log({"kind": "depth", "t": self.now(), **self.depth_stats, "quality": planner.depth_quality})
             (xyz, _, rotation), rate = self.pose_at(msg.header.stamp.sec + msg.header.stamp.nanosec * 1e-9)
             if rate > MAX_TURN_RATE:
                 self.depth_stats["turning"] += 1
@@ -424,6 +463,7 @@ def main(argv=None):
         time.sleep(.3)                        # let the Land command go out before tearing down
     finally:
         log({"kind": "end", "state": mission.state, "events": mission.events, "depth": node.depth_stats,
+             "depth_quality": planner.depth_quality,
              "cleared": planner.cleared, "planner_events": planner.events})
         print(f"finished in state {mission.state}; journal {a.output / 'journal.jsonl'}", flush=True)
         executor.shutdown(timeout_sec=1.0)

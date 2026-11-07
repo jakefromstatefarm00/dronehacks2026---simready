@@ -286,3 +286,20 @@ def test_carrot_is_pulled_in_at_corners():
     assert not np.allclose(out[1], chord_target) and out[1][1] < 0   # pulled back before the corner
     straight = np.array([xy, [.2, -.8]])                       # nothing in the way: the full 0.5 m
     assert np.allclose(safe_carrot_path(cost, spec, xy, straight, .5)[1], [.2, -.6])
+
+
+def test_turning_holds_the_spot_where_it_began():
+    """FlyX run 6: holding 'here' at every look-around step let the drone drift toward a wall."""
+    class Turner(FakePlanner):
+        def update(self, xy, yaw):
+            return PlanCommand("turn", yaw=yaw + .26, reason="look around")
+    m = Mission(Turner(), MissionConfig(execute=True))
+    t, _ = run_until(m, "WAIT_OFFBOARD", 0.0)
+    t, _ = run_until(m, "TAKEOFF", t, nav_state=NAV_STATE_OFFBOARD, arming_state=ARMING_STATE_ARMED)
+    t, _ = run_until(m, "NAVIGATE", t, **AIR)
+    m.tick(tel(t + .05, **AIR)); m.plan()
+    first = np.array(m.target[0])
+    for i, east in enumerate((.05, .10, .15)):                 # the vehicle drifts north (NED x) ...
+        m.tick(tel(t + .1 * (i + 2), **{**AIR, "position_ned": (east, 0.0, -.85)}))
+        m.plan()
+    assert np.allclose(m.target[0], first)                     # ... the setpoint stays put

@@ -98,6 +98,7 @@ class Mission:
         self._sim_takeoff = None
         self._land_sent = False
         self._last_command_t = None
+        self._turn_xy = None
         self._offboard_lost_since = None
         self.pose_course = None            # (xyz, yaw, rotation) for depth projection
 
@@ -145,6 +146,14 @@ class Mission:
         xyz, yaw, _ = self.pose_course
         cmd = self.planner.update(xyz[:2], yaw)
         self.target = target_from_command(cmd, xyz[:2], yaw, self.cfg.carrot_m)
+        if cmd.mode == "turn":
+            # hold the spot where the turning began: re-holding "here" every step let the vehicle
+            # drift 11 cm during a look-around in FlyX run 6, toward a wall
+            if self._turn_xy is None:
+                self._turn_xy = np.asarray(xyz[:2], float).copy()
+            self.target = (self._turn_xy, self.target[1])
+        else:
+            self._turn_xy = None
         self.planner_status = cmd.mode
         return cmd
 

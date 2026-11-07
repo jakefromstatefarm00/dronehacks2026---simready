@@ -91,6 +91,15 @@ CPU busy) and 13/13 offline courses:
 - no mapping/planning below 0.5 m; Offboard/arm/Land re-sent every 1 s until PX4 shows them;
   takeoff accepts within 0.25 m after 10 s; an exception in any callback lands the vehicle.
 
+**Run 6** cleared checkpoint 1 and entered the maze. The journal showed: (1) the control loop
+stalled ~1 s twice at TAKEOFF -> NAVIGATE and PX4 briefly failsafed (`offboard_control_signal_lost`)
+- the planner process now runs at lower CPU priority (`os.nice`); (2) "no path" at the tight passage
+past maze wall M1 - new depth obstacles must be seen in 2 of ~3 frames, and returns within 25 cm of a
+published wall count as that wall; (3) the look-around always turned left and re-held "here" each step
+(drifted 11 cm toward a wall), then VIO lost xy facing the wall -> land - it now turns toward the
+goal's side first and holds the spot where it began. New journal diagnostics: `depth.quality`
+(share of depth hits on published walls: low = wrong camera mount) and `tf_static` (the sim's mounts).
+
 Tested: `tests/test_flyx_mission.py`; full ROS wiring in Jazzy against `fake_px4.py`
 (status at the lab's slow rates): course completed, 3 commands (Offboard, arm, land);
 shadow + Ctrl-C sends nothing; `--execute` + SIGTERM mid-flight sends Land.

@@ -148,6 +148,7 @@ class OnlinePlanner:
         self.router.reset()
         self.poly, self.dirty, self.looked, self.optimistic, self.since_plan = None, True, 0.0, False, 0.0
         self._look_prev, self._look_calls, self._look_target, self._look_mark = None, 0, None, None
+        self._look_dir = None
         cp = self.checkpoint
         if cp is None:
             self.status = "done"
@@ -226,6 +227,7 @@ class OnlinePlanner:
             if not cells:
                 return self._stuck("no path")
             self.looked, self._look_prev, self._look_calls, self._look_target = 0.0, None, 0, None
+            self._look_dir = None
             # start at the true position; a one-cell plan (already in the goal cell) still
             # flies to the cell centre instead of stalling
             new_poly = np.vstack([self.pos, spec.to_xy(np.array(cells[1:] or cells[-1:]))])
@@ -260,7 +262,7 @@ class OnlinePlanner:
             self.dirty = True
             # step, hold until a depth frame has been taken at this heading, step again: frames
             # taken mid-turn are the ones a slightly late pose misplaces (the node drops them)
-            step = np.deg2rad(self.cfg.turn_step_deg)
+            step = np.deg2rad(self.cfg.turn_step_deg) * self._look_sign()
             if self._look_target is None:
                 self._look_target, self._look_mark = self.yaw + step, None
             elif abs(_wrap(self._look_target - self.yaw)) < np.deg2rad(4):
@@ -275,6 +277,15 @@ class OnlinePlanner:
             return self._decide()
         self._fail(why)
         return Command("failed", reason=why)
+
+    def _look_sign(self):
+        """Turn toward the goal's side first (it used to always turn left; in FlyX run 6 that
+        swung the camera onto a nearby wall instead of the open side toward the route)."""
+        if getattr(self, "_look_dir", None) is None:
+            goal = self.spec.to_xy(np.array(self.goal)) if self.goal is not None else self.checkpoint.centre
+            off = _wrap(atan2(goal[1] - self.pos[1], goal[0] - self.pos[0]) - self.yaw)
+            self._look_dir = -1.0 if off < 0 else 1.0
+        return self._look_dir
 
     def _commit(self, cost, new_poly):
         """Path commitment: keep the current route unless it is blocked, ends elsewhere, or the
