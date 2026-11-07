@@ -1,0 +1,8 @@
+# Laptop / desktop only (NOT the drone): training and analysis tools in team_mission/rl/
+numpy>=1.24
+pyyaml>=6
+gymnasium>=0.29
+stable-baselines3>=2.3
+torch>=2.1          # CPU build is fine: pip install torch --index-url https://download.pytorch.org/whl/cpu
+matplotlib>=3.7
+pytest>=7

@@ -1,0 +1,33 @@
+# Slow lap of the DroneHacks course v3, in PUBLISHED-COURSE coordinates (metres, z = height above
+# the floor). Made from the gates in config/course_v3.yaml of the RL repo plus extra points so that
+# every straight segment keeps >= 0.25 m from the course model (checked with
+# `python -m team_mission.rl.check_course`). VERIFY against the official layout before flying.
+#
+# The drone takes off straight up from the launch mark first; the mission node adds that point.
+# The LAST checkpoint is where it lands.
+description: DroneHacks course v3, slow lap, launch mark -> pad
+frame: course
+# corridor = how far (m) the drone CENTRE may stray from the straight line into this checkpoint
+# before training calls it a crash and the drone node holds. Measured: free space for a 0.25 m
+# drone radius on each side of each segment (zone 1 maze is only ~0.21-0.25 m each way).
+defaults: {radius: 0.18, corridor: 0.35}
+# where the drone sits on the launch mark (used by TRAINING and EVALUATION only; on the drone
+# the launch pose comes from mission.yaml launch_x/launch_y/launch_z/launch_yaw_deg)
+train_start: {xyz: [-2.515, 0.914, 0.0], yaw_deg: 90.0}
+checkpoints:
+  - {name: z1_corner1,  xyz: [-2.515,  2.585, 1.00], corridor: 0.22}
+  - {name: z1_corner2,  xyz: [-1.372,  2.585, 1.00], corridor: 0.20}
+  - {name: z1_corner3,  xyz: [-1.372,  0.970, 1.00], corridor: 0.22}
+  - {name: z1_corner4,  xyz: [-0.254,  0.970, 1.00], corridor: 0.20}
+  - {name: z1_corner5,  xyz: [-0.254,  2.585, 1.00], corridor: 0.22}
+  - {name: z1_end,      xyz: [ 0.330,  2.585, 1.00], corridor: 0.20}
+  - {name: bend_east,   xyz: [ 1.500,  2.450, 0.97], corridor: 0.18}
+  - {name: pre_tube,    xyz: [ 2.311,  1.650, 0.94]}
+  - {name: tube_in,     xyz: [ 2.311,  1.219, 0.94], radius: 0.20, corridor: 0.25}
+  - {name: tube_out,    xyz: [ 2.311, -0.305, 0.94], radius: 0.20, corridor: 0.25}
+  - {name: post_tube,   xyz: [ 2.311, -0.700, 0.94]}
+  - {name: chicane,     xyz: [ 0.900, -2.050, 0.85], corridor: 0.22}
+  - {name: pre_window,  xyz: [ 0.046, -2.460, 0.76]}
+  - {name: window,      xyz: [-0.471, -2.272, 0.76], radius: 0.15, corridor: 0.18}
+  - {name: post_window, xyz: [-0.894, -2.118, 0.76], radius: 0.20, corridor: 0.18}
+  - {name: pad,         xyz: [-2.042, -0.792, 0.60], radius: 0.20}
