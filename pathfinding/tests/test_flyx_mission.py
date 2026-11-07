@@ -303,3 +303,20 @@ def test_turning_holds_the_spot_where_it_began():
         m.tick(tel(t + .1 * (i + 2), **{**AIR, "position_ned": (east, 0.0, -.85)}))
         m.plan()
     assert np.allclose(m.target[0], first)                     # ... the setpoint stays put
+
+
+def test_heading_rate_is_capped():
+    """VIO dies on fast turns: the commanded NED yaw may change at most yaw_rate_max per second."""
+    class Spinner(FakePlanner):
+        def update(self, xy, yaw):
+            return PlanCommand("turn", yaw=yaw + 2.0, reason="look around")      # asks for a big turn
+    m = Mission(Spinner(), MissionConfig(execute=True))
+    t, _ = run_until(m, "WAIT_OFFBOARD", 0.0)
+    t, _ = run_until(m, "TAKEOFF", t, nav_state=NAV_STATE_OFFBOARD, arming_state=ARMING_STATE_ARMED)
+    t, _ = run_until(m, "NAVIGATE", t, **AIR)
+    yaws = []
+    for i in range(1, 41):                                          # 2 s at 20 Hz
+        m.plan()
+        yaws.append(m.tick(tel(t + .05 * i, **AIR)).setpoint[1])
+    steps = np.abs(np.diff(yaws))
+    assert steps.max() <= .25 * .05 + 1e-9 and abs(yaws[-1] - yaws[0]) > .4      # capped, still turning

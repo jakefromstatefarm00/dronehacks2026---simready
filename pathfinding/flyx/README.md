@@ -99,6 +99,9 @@ published wall count as that wall; (3) the look-around always turned left and re
 (drifted 11 cm toward a wall), then VIO lost xy facing the wall -> land - it now turns toward the
 goal's side first and holds the spot where it began. New journal diagnostics: `depth.quality`
 (share of depth hits on published walls: low = wrong camera mount) and `tf_static` (the sim's mounts).
+Also: the commanded heading is rate-limited to **0.25 rad/s** (`yaw_rate_max`). Suraj's
+flyx_course data: 30 of 40 visual-odometry losses at yaw rates above 0.35 rad/s, 3/3 Gazebo
+completions at 0.25. Fake-PX4: 4/4 complete, ~45 s takeoff to landing.
 
 Tested: `tests/test_flyx_mission.py`; full ROS wiring in Jazzy against `fake_px4.py`
 (status at the lab's slow rates): course completed, 3 commands (Offboard, arm, land);

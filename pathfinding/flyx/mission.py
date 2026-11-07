@@ -80,6 +80,9 @@ class MissionConfig:
     takeoff_timeout_s: float = 10.0        # then accept being within takeoff_loose_m of the altitude
     takeoff_loose_m: float = .25
     plan_above_m: float = .5               # no mapping/planning below this (depth from the floor)
+    # Visual odometry dies on fast turns: Suraj's flyx_course data had 30 of 40 VIO losses above
+    # 0.35 rad/s, and 3/3 Gazebo completions at 0.25; our FlyX run 6 lost xy after turning in place.
+    yaw_rate_max: float = .25              # rad/s cap on the commanded heading's rate of change
 
 
 class Mission:
@@ -99,6 +102,8 @@ class Mission:
         self._land_sent = False
         self._last_command_t = None
         self._turn_xy = None
+        self._sp_yaw = None                # last commanded NED yaw (rate limiter state)
+        self._sp_yaw_t = None
         self._offboard_lost_since = None
         self.pose_course = None            # (xyz, yaw, rotation) for depth projection
 
@@ -256,8 +261,10 @@ class Mission:
             if self.planner_status == "failed":
                 return self._land(now, "planner failed: " + (self.planner.events[-1]["event"] if self.planner.events else ""))
             if self.target is None:
-                return Output(self.state, self._course_setpoint(self.pose_course[0][:2], self.pose_course[1]))
-            return Output(self.state, self._course_setpoint(*self.target), note=f"planner {self.planner_status}")
+                return Output(self.state, self._limit_yaw(self._course_setpoint(self.pose_course[0][:2],
+                                                                                self.pose_course[1]), tel))
+            return Output(self.state, self._limit_yaw(self._course_setpoint(*self.target), tel),
+                          note=f"planner {self.planner_status}")
 
         if self.state == "LAND":
             if tel.landed and tel.arming_state == ARMING_STATE_DISARMED:
@@ -268,6 +275,18 @@ class Mission:
             return Output(self.state)
 
         return Output(self.state)
+
+    def _limit_yaw(self, setpoint, tel):
+        """Rate-limit the commanded heading to yaw_rate_max (starts from the vehicle's yaw)."""
+        position, yaw = setpoint
+        now = tel.now
+        if self._sp_yaw is None:
+            self._sp_yaw, self._sp_yaw_t = yaw_from_q_ned(tel.q_ned_frd), now
+        step = self.cfg.yaw_rate_max * max(0.0, min(now - self._sp_yaw_t, .2))
+        err = float(np.arctan2(np.sin(yaw - self._sp_yaw), np.cos(yaw - self._sp_yaw)))
+        new = self._sp_yaw + float(np.clip(err, -step, step))
+        self._sp_yaw, self._sp_yaw_t = float(np.arctan2(np.sin(new), np.cos(new))), now
+        return position, self._sp_yaw
 
     def _airborne_guard(self, tel, healthy):
         c, now = self.cfg, tel.now
