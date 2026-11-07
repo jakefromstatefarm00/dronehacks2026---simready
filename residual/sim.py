@@ -43,7 +43,8 @@ REPO = Path(__file__).resolve().parents[1]
 BASE_FILE = REPO / "jolie_course" / "upload_to_flyx.py"
 LAUNCH_XYZ = np.array([-2.515, .914, .05])
 LAUNCH_YAW = math.pi / 2
-DT = 0.05
+DT = 0.05                              # control tick, LAB WALL seconds (20 Hz monotonic timer)
+RTF = 0.8                              # FlyX lab sim runs at ~0.8x real time (coordinator, FlyX run)
 PLAN_PERIOD = 0.2
 MAX_SIM_S = 200.0
 FOOTPRINT_R = 0.28                     # Sky Beta prop-tip radius: closer than this to a wall = contact
@@ -132,7 +133,7 @@ class Level:
     variant: str = "nominal"           # nominal | walls | mixed (walls + clutter)
     wall_shift: float = 0.0
     clutter: tuple = (1, 3)
-    estimator: bool = False            # dynamics.py noise / drift / link delay (default ranges)
+    estimator: float = 0.0             # x dynamics.py default noise / drift / link-delay / disturbance ranges
     full_dynamics: bool = False        # domain-randomised PX4 / airframe ranges
     vio_scale: float = 0.0             # VIO-loss hazard multiplier (0 = risk counted, no events)
     launch_error: float = 0.0          # m / (x 0.1 rad) placement error on the mark
@@ -148,33 +149,41 @@ LEVELS = [
     Level("L0", description="published course, nominal dynamics"),
     Level("L1", "walls", .08, description="maze/chicane walls shifted up to 8 cm"),
     Level("L2", "mixed", .15, description="walls up to 15 cm + 1-3 unmapped posts"),
-    Level("L3", "mixed", .15, estimator=True, vio_scale=1.0, launch_error=.03, depth_noise=.01,
-          description="+ cuVSLAM noise/drift/link delay, VIO-loss hazard, launch error, depth noise"),
-    Level("L4", "mixed", .15, estimator=True, vio_scale=1.0, launch_error=.03, depth_noise=.01,
+    Level("L3", "mixed", .15, estimator=.5, vio_scale=1.0, launch_error=.015, depth_noise=.01,
+          description="+ half of dynamics.py's cuVSLAM noise/drift/delay/disturbance ranges, VIO-loss hazard, launch error 1.5 cm, depth noise"),
+    Level("L4", "mixed", .15, estimator=.5, vio_scale=1.0, launch_error=.015, depth_noise=.01,
           stall_rate=.2, stall_max=1.2, odom_pause_rate=.05, slow_silence_rate=.02,
           description="+ lab starvation: stalls <= 1.2 s, odometry pauses 0.3-1.4 s, slow topics silent 2-6 s"),
-    Level("L5", "mixed", .15, estimator=True, full_dynamics=True, vio_scale=1.5, launch_error=.03, depth_noise=.015,
+    Level("L5", "mixed", .15, estimator=1.0, full_dynamics=True, vio_scale=1.5, launch_error=.03, depth_noise=.015,
           stall_rate=.4, stall_max=2.0, odom_pause_rate=.08, slow_silence_rate=.03,
-          description="+ randomised PX4/airframe dynamics, FlyX-run-7 stalls (0.4/s, <= 2 s), VIO x1.5"),
+          description="+ full dynamics.py estimator ranges, randomised PX4 gains/lag, FlyX-run-7 stalls (0.4/s, <= 2 s), VIO x1.5, launch error 3 cm"),
 ]
 LEVEL = {lv.name: lv for lv in LEVELS}
+
+
+# Calibrated to Jolie's completed FlyX run (lab wall clock, sim ~0.8x real time): NAVIGATE 120.85 s wall
+# = ~97 s sim, TAKEOFF 7.0 s wall = 5.6 s sim. PX4's nominal MPC_XY_P 0.95 / 0.35 s lag gave NAVIGATE
+# 71 s sim, too fast; an EFFECTIVE P of 0.7 with a 0.5 s velocity lag gives 97-101 s (README).
+NOMINAL_PX4 = dict(kp_xy=.7, tau=.5, kp_z=.35)
 
 
 def dynamics_ranges(level):
     dyn = dynamics_module()
     nominal = dyn.DynamicsRanges.nominal()
     if level.full_dynamics:
-        r = dyn.DynamicsRanges()
-        # PX4 MPC_XY_P ~0.95 and a 0.35-1.0 s velocity lag were measured in the real runs
-        return replace(r, kp_xy=(.8, 1.1), tau=(.25, .7))
-    # nominal: PX4 P 0.95, 0.35 s velocity lag, and the few-mm jitter every real cuVSLAM pose has (a
-    # noise-free pose is not nominal: her planner's replan-by-distance relies on it, see README)
-    r = replace(nominal, kp_xy=(.95, .95), tau=(.35, .35), pos_noise=(.003, .003), vel_noise=(.01, .01))
+        # every dynamics.py range (incl. its full estimator ranges), PX4 gains/lag around the calibrated
+        # nominal (velocity lag 0.35-1.0 s as measured in the real runs)
+        return replace(dyn.DynamicsRanges(), kp_xy=(.55, .9), tau=(.35, 1.0), kp_z=(.3, .5))
+    # nominal: calibrated PX4 tracking + the few-mm jitter every real cuVSLAM pose has (a noise-free
+    # pose is not nominal: her planner's replan-by-distance relies on it, see README)
+    r = replace(nominal, pos_noise=(.003, .003), vel_noise=(.01, .01), **{k: (v, v) for k, v in NOMINAL_PX4.items()})
     if level.estimator:
-        d = dyn.DynamicsRanges()
-        r = replace(r, pos_noise=d.pos_noise, vel_noise=d.vel_noise, drift_per_sqrt_m=d.drift_per_sqrt_m,
-                    drift_rate=d.drift_rate, yaw_drift_rate=d.yaw_drift_rate, delay_steps=d.delay_steps,
-                    disturbance=(0.0, .15))
+        d, k = dyn.DynamicsRanges(), float(level.estimator)
+        sc = lambda rg, lo=0.0: (max(lo, rg[0] * k), max(lo, rg[1] * k))
+        r = replace(r, pos_noise=sc(d.pos_noise, .003), vel_noise=sc(d.vel_noise, .01),
+                    drift_per_sqrt_m=sc(d.drift_per_sqrt_m), drift_rate=sc(d.drift_rate),
+                    yaw_drift_rate=sc(d.yaw_drift_rate), disturbance=sc(d.disturbance),
+                    delay_steps=(d.delay_steps[0], int(round(d.delay_steps[1] * k))))
     return r
 
 
@@ -428,7 +437,9 @@ class EpisodeResult:
     residual: bool
     complete: bool = False
     outcome: str = ""
-    course_time: float = float("nan")
+    course_time: float = float("nan")      # NAVIGATE duration (sim s) of a completed run
+    navigate_time: float = float("nan")
+    state_times: dict = field(default_factory=dict)
     cps_true: int = 0
     contact: bool = False
     min_clearance: float = float("inf")
@@ -470,7 +481,8 @@ def run_episode(level, seed, policy_params=None, residual=False, record=False, m
     world = make_world(level, np.random.default_rng([seed, 1]))
     rng_dyn, rng_ev, rng_cam = (np.random.default_rng([seed, k]) for k in (2, 3, 4))
     dyn = dynamics_module()
-    sim = dyn.DroneSim(dt=DT)
+    DTS = DT * RTF                          # sim seconds per control tick
+    sim = dyn.DroneSim(dt=DTS)
     sim.sample(dynamics_ranges(level), rng_dyn)
     launch_true = LAUNCH_XYZ.copy()
     yaw0 = LAUNCH_YAW
@@ -508,28 +520,30 @@ def run_episode(level, seed, policy_params=None, residual=False, record=False, m
     other_ok = False
     prev_res = None
     step = 0
+    prev_state, state_t = None, {}
     try:
         while t < max_s:
-            t = step * DT
+            w = step * DT                       # lab wall clock: what the program's monotonic clock reads
+            t = w * RTF                         # sim time: physics, PX4, /clock
             step += 1
             p_est, v_est, yaw_est = sim.estimate()
             est_ned = _M @ (p_est - p0)
             # ------------------------------------------------ telemetry arrives (unless paused)
-            odom_ok = not _active(odom_pauses, t) and t >= vio_pause_until and t >= vio_loss_until
+            odom_ok = not _active(odom_pauses, w) and t >= vio_pause_until and t >= vio_loss_until
             if odom_ok:
-                tel.odom_t, tel.position_ned = t, tuple(est_ned)
+                tel.odom_t, tel.position_ned = w, tuple(est_ned)
                 tel.q_ned_frd = _q_from_yaw_ned(math.pi / 2 - yaw_est)
-            if not _active(slow_silences, t):
-                tel.status_t, tel.local_t, tel.landed_t = t, t, t
+            if not _active(slow_silences, w):
+                tel.status_t, tel.local_t, tel.landed_t = w, w, w
                 tel.arming_state, tel.nav_state = px4.arming_state, px4.nav_state
                 tel.failsafe, tel.user_intention = px4.failsafe, px4.user_intention
                 tel.landed = px4.landed
                 # PX4 dead-reckons through a short VIO loss; after 1 s without it xy is invalid
                 tel.xy_valid = not (vio_loss_start <= t < vio_loss_until and t - vio_loss_start >= 1.0)
                 tel.z_valid = True
-            tel.now, tel.sim_now = t, t
+            tel.now, tel.sim_now = w, t
             # ------------------------------------------------ the program (unless stalled)
-            stalled = _active(stalls, t)
+            stalled = _active(stalls, w)
             if not stalled:
                 out = mission.tick(tel)
                 if out.setpoint is not None:
@@ -537,8 +551,8 @@ def run_episode(level, seed, policy_params=None, residual=False, record=False, m
                     px4.setpoint(_M @ np.asarray(pos_ned, float) + p0, math.pi / 2 - yaw_ned, t)
                 if out.command is not None:
                     px4.command(out.command, t, p_est)
-                if t + 1e-9 >= next_plan:
-                    next_plan = t + PLAN_PERIOD
+                if w + 1e-9 >= next_plan:
+                    next_plan = w + PLAN_PERIOD
                     if mission.frame is not None and mission.planning_allowed() and mission.pose_course is not None:
                         if abs(sim.yaw_rate) <= b.MAX_TURN_RATE:
                             img = renderer.render(sim.p, sim.yaw)
@@ -553,6 +567,9 @@ def run_episode(level, seed, policy_params=None, residual=False, record=False, m
                             prev_res = r
             if mission.state in ("DONE", "FAILED", "TAKEN_OVER"):
                 break
+            if mission.state != prev_state:
+                state_t[mission.state] = t
+                prev_state = mission.state
             if mission.state == "TAKEOFF" and t_takeoff is None:
                 t_takeoff = t
             # ------------------------------------------------ PX4 + airframe
@@ -572,8 +589,8 @@ def run_episode(level, seed, policy_params=None, residual=False, record=False, m
             speed = float(np.linalg.norm(sim.v[:2]))
             if sim.p[2] > .3:
                 h = vio_hazard(sim.yaw_rate, speed)
-                res.vio_risk += h * DT
-                if level.vio_scale and t >= vio_loss_until and rng_ev.random() < h * level.vio_scale * DT:
+                res.vio_risk += h * DTS
+                if level.vio_scale and t >= vio_loss_until and rng_ev.random() < h * level.vio_scale * DTS:
                     res.vio_events += 1
                     ang = rng_ev.uniform(0, 2 * math.pi)
                     if rng_ev.random() < .25:                       # estimate lost
@@ -586,7 +603,7 @@ def run_episode(level, seed, policy_params=None, residual=False, record=False, m
                         sim.yaw_bias += rng_ev.normal(0, .03)
                         vio_pause_until = t + float(rng_ev.uniform(.3, .8))
             if t < vio_loss_until:
-                sim.bias += rng_ev.normal(0, .15 * math.sqrt(DT), 3) * np.array([1, 1, .2])   # dead reckoning
+                sim.bias += rng_ev.normal(0, .15 * math.sqrt(DTS), 3) * np.array([1, 1, .2])   # dead reckoning
             elif vio_loss_jump is not None:
                 sim.bias += vio_loss_jump
                 vio_loss_jump = None
@@ -599,8 +616,8 @@ def run_episode(level, seed, policy_params=None, residual=False, record=False, m
                     c = exact_clearance(world["course"], sim.p, static_world()["env"].half_height)
                 res.min_clearance = min(res.min_clearance, c)
                 if c < CLEARANCE_TARGET:
-                    res.time_below_target += DT
-                    res.clearance_deficit += (CLEARANCE_TARGET - c) * DT
+                    res.time_below_target += DTS
+                    res.clearance_deficit += (CLEARANCE_TARGET - c) * DTS
                 if c < FOOTPRINT_R:
                     res.contact = True
                     res.outcome = "contact"
@@ -628,8 +645,11 @@ def run_episode(level, seed, policy_params=None, residual=False, record=False, m
         else:
             res.outcome = mission.state.lower()
     res.complete = res.outcome == "complete" and t_takeoff is not None and (t - t_takeoff) <= 180.0
+    if "NAVIGATE" in state_t:
+        res.navigate_time = state_t.get("LAND", t) - state_t["NAVIGATE"]
+    res.state_times = {k: round(v, 2) for k, v in state_t.items()}
     if res.complete:
-        res.course_time = t - t_takeoff
+        res.course_time = res.navigate_time
     if residual:
         res.applied = mission.residual_stats["applied"]
         res.zeroed = mission.residual_stats["zero"]
@@ -644,5 +664,5 @@ if __name__ == "__main__":
     for lv in sys.argv[1:] or ["L0"]:
         t0 = time.perf_counter()
         r = run_episode(lv, 0)
-        print(lv, r.outcome, r.note, f"t={r.course_time:.1f}", f"cps={r.cps_true}", f"minclr={r.min_clearance:.3f}",
+        print(lv, r.outcome, r.note, f"nav={r.navigate_time:.1f}", r.state_times, f"cps={r.cps_true}", f"minclr={r.min_clearance:.3f}",
               f"vio={r.vio_risk:.3f}/{r.vio_events}", f"fs={r.failsafe_blips}", f"wall={time.perf_counter() - t0:.1f}s")
