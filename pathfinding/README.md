@@ -85,6 +85,7 @@ unmapped cylinders; `gzsim/fly_planner.py` flies `OnlinePlanner` with ground-tru
 | 06 | same cylinder | **off** | **failed: hit the cylinder** after the tunnel |
 | verify-1 | published | on | completed, 107.2 s, 0 contacts, min clearance 0.369 m (X3 radius 0.36), landed 0.03 m — with tight-spot slow-down |
 | verify-2 | published | on | completed, 92.2 s, 0 contacts, min clearance 0.378 m, landed 0.05 m — same settings, repeat |
+| verify-3 | + 1 unmapped cylinder | on | **failed: stalled** turning in place SE of the cylinder (0 contacts, timeout 240 s); run 05 in the same world completed |
 
 ```bash
 bash gzsim/run.sh                          # published course, depth on
@@ -98,7 +99,9 @@ maze wall M1 leaves it ~6 cm, so Gazebo runs need the 2.5 cm grid (`--resolution
 not always clean there (one earlier run touched the north net). The adapter now slows down where
 the published map is tight (`--tight-speed`, from map clearance, never ground truth); both runs since
 were clean. Gazebo
-uses ground-truth pose (no cuVSLAM) and velocity control (not PX4). Depth frames are
+uses ground-truth pose (no cuVSLAM) and velocity control (not PX4). Near an unmapped obstacle two routes can cost almost the same and the plan can flip between
+them each replan, so the look-ahead turn never settles (verify-3); path commitment is the next
+fix. Depth frames are
 projected with the latest pose, not the pose at capture time â€” fine at these speeds, the
 next thing to fix. Checkpoint lines 1â€“2 are our reading of the rules, not official
 coordinates.
