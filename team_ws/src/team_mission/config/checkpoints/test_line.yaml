@@ -1,9 +1,0 @@
-# FIRST REAL TEST. Relative to the takeoff spot: x = forward (nose direction at takeoff), y = left,
-# z = height above the takeoff ground. 1 m forward, then back, then land where it started.
-# Needs ~1.5 m of clear space in front of the drone.
-description: 1 m out and back, land at the start
-frame: start
-defaults: {radius: 0.20, corridor: 0.35}
-checkpoints:
-  - {name: forward_1m, xyz: [1.0, 0.0, 1.0]}
-  - {name: back_home,  xyz: [0.0, 0.0, 0.8]}

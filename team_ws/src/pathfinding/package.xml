@@ -1,0 +1,36 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>dronehacks_pathplan</name>
+  <version>1.0.0</version>
+  <description>
+    Sky Beta competitor package: our online path planner (Theta* replanning on the published
+    course, corrected by depth) behind skybeta_flight_interface. Never publishes to /fmu/in,
+    never arms. The FlyX single-file program's flight logic, on the organisers' contract.
+  </description>
+  <maintainer email="jolieznli@gmail.com">jolie</maintainer>
+  <license>Apache-2.0</license>
+
+  <exec_depend>rclpy</exec_depend>
+  <exec_depend>rcl_interfaces</exec_depend>
+  <exec_depend>geometry_msgs</exec_depend>
+  <exec_depend>nav_msgs</exec_depend>
+  <exec_depend>sensor_msgs</exec_depend>
+  <exec_depend>std_msgs</exec_depend>
+  <exec_depend>std_srvs</exec_depend>
+  <exec_depend>ament_index_python</exec_depend>
+  <exec_depend>launch</exec_depend>
+  <exec_depend>launch_ros</exec_depend>
+  <exec_depend>python3-numpy</exec_depend>
+  <exec_depend>python3-yaml</exec_depend>
+  <!-- flight_interface ships with the Sky Beta image (or skybeta/src, built as the underlay) -->
+  <exec_depend>skybeta_flight_interface</exec_depend>
+  <!-- only sim_pilot / fake_px4 (simulation and self-test) use px4_msgs; the image carries it.
+       Do NOT put px4_msgs in team_ws. -->
+  <exec_depend>px4_msgs</exec_depend>
+  <test_depend>python3-pytest</test_depend>
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>
