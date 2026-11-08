@@ -20,7 +20,8 @@ CELL = ("drift", "head", "jumps", "variant", "noise", "mount_dx", "mount_dy", "m
 def load(paths):
     rows = {}
     for p in paths:
-        for line in open(p):
+        import gzip
+        for line in (gzip.open(p, "rt") if str(p).endswith(".gz") else open(p)):
             try:
                 r = json.loads(line)
             except ValueError:
