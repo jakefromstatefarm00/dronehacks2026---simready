@@ -45,11 +45,17 @@ vo=$(once /visual_slam/status | grep -E '^vo_state' | grep -oE '[0-9]+')
 # 3 latency
 if [ "$QUICK" -eq 0 ]; then
   docker cp ~/skybeta/tools/latency_probe.py "$C":/tmp/latency_probe.py 2>/dev/null
-  rec=$(docker exec "$C" bash -lc 'source skybeta_env.sh; timeout -s KILL 40 python3 /tmp/latency_probe.py --seconds 15' 2>/dev/null | grep -oE 'Recommended EKF2_EV_DELAY = [0-9]+' | grep -oE '[0-9]+$')
+  probe=$(docker exec "$C" bash -lc 'source skybeta_env.sh; timeout -s KILL 40 python3 /tmp/latency_probe.py --seconds 15' 2>/dev/null)
+  drv=$(echo "$probe" | grep -A2 '^driver leg' | grep -oE 'p50=[0-9.]+' | grep -oE '[0-9]+' | head -1)
+  rec=$(echo "$probe" | grep -oE 'Recommended EKF2_EV_DELAY = [0-9]+' | grep -oE '[0-9]+$')
+  p95=$(echo "$probe" | grep -A2 '^full chain' | grep -oE 'p95=[0-9.]+' | grep -oE '[0-9]+' | head -1)
   if [ -n "$rec" ]; then
-    if [ "$rec" -lt 240 ]; then pass "vision age p50 ${rec} ms (fused even with the fleet EV_DELAY 70 / DELAY_MAX 200)"
-    elif [ "$rec" -lt 350 ]; then warn "vision age p50 ${rec} ms: needs EKF2_EV_DELAY~250 + EKF2_DELAY_MAX 500 on the FC (jetson/px4/skybeta06_ekf2_vision_delay.params)"
-    else fail "vision age p50 ${rec} ms: too old for any EKF2 setting; camera chain problem"; fi
+    # clean boot: driver leg ~36 ms, full chain p50 ~72 ms (organisers' bench). bad boot: a constant 200-290 ms
+    # (camera queue backed up at startup) that never drains -> EKF2 (EV_DELAY 70 / DELAY_MAX 200) drops it.
+    if [ "${drv:-999}" -lt 150 ] && [ "$rec" -lt 150 ]; then pass "vision latency clean boot: driver leg ${drv} ms, full chain p50 ${rec} ms (p95 ${p95:-?} ms)"
+    elif [ "$rec" -lt 235 ]; then warn "vision latency high (driver ${drv} ms, full chain p50 ${rec} ms): on EKF2's edge; a stack restart usually gives a clean boot"
+    else fail "BAD BOOT: vision ${rec} ms old (driver leg ${drv} ms): EKF2 will drop it. sudo systemctl restart skybeta-stack, wait 90 s, rerun (repeat until driver leg < 150 ms)"; fi
+    [ -n "$p95" ] && [ "$p95" -ge 300 ] && warn "latency spikes p95 ${p95} ms: EKF2_DELAY_MAX 400 (jetson/px4/skybeta06_ekf2_vision_delay.params) keeps them fused"
   else warn "latency probe gave no result"; fi
 fi
 

@@ -39,6 +39,22 @@ Decoded with pyulog (`vehicle_status`, `vehicle_local_position`, `vehicle_land_d
   which is arrival age ~217 ms + EKF2_EV_DELAY 70 -> inside EKF2's acceptance window (see below) but close
   to its edge (235 ms).
 
+## Matching the Jetson-side journals (pulled 2026-11-08 from `~/broken_team_ws/runs`, copies in `drone_logs/jetson_2026-11-08/runs/`)
+
+The FC clock had no real time (`time_ref_utc=0`); its "2026-11-06 15:43-16:01 UTC" is really
+**2026-11-07 ~21:07-21:25 PST**. The team package (`dronehacks_pathplan`) journals from that evening:
+
+| journal (PST) | what the program logged | PX4 log |
+|---|---|---|
+| pathplan-012453 (17:24), 045809 (20:58) | `READY` <-> `WAIT_HEALTH` cycling: **"PX4 has no valid local position (vision not reaching EKF2?)"**, "no fresh odometry (0.32 s old) - is cuVSLAM tracking?" | logs 24-30: armed, ALTCTL, "Switching to Position is currently not available", no EV data |
+| **pathplan-052255 (21:22)** | `READY` -> `ARMED` 21:25:16 -> **`TAKEOFF` "Offboard active"** 21:25:18 -> `NAVIGATE` "at altitude" 21:25:23 | **log_31**: Position -> Offboard 2.1 s after arming, takeoff at 3.0 s, EV lost at 4.3 s, killed 5.2 s |
+| pathplan-075710 (23:57), today's 184413 (10:44 PST, new team_ws) | `READY` <-> `WAIT_HEALTH` every few seconds: **"no fresh odometry (0.30-0.34 s old)"** | (today's logs still on the SD card) |
+
+Same code, same drone, same evening: the one run that flew is the one where EKF2 happened to be
+fusing vision at the moment of arming. The failed ones say so themselves. The vision age sits on
+EKF2's acceptance edge and drifts per boot (measured: 206, 218, 290, ~310 ms), which is why it
+"sometimes works".
+
 ## What this proves
 
 1. **The chain can work**: with vision fused on the ground, the pilot's arm -> Position flip engaged
@@ -53,9 +69,11 @@ Decoded with pyulog (`vehicle_status`, `vehicle_local_position`, `vehicle_land_d
 4. **Vision is lost ~1 s after liftoff** (log_31; Nov 8 03:22 the camera physically dropped off USB3 at
    arming). After that EKF2 falls back to IMU + magnetometer and the heading jumps.
 
-So the fixes stand: camera USB cable (vibration), `EKF2_EV_DELAY 250` + `EKF2_DELAY_MAX 500`
-(`jetson/px4/skybeta06_ekf2_vision_delay.params`), and the `fly` / `preflight.sh` gate that only says GO
-with `cs_ev_pos` true and a valid local position -- the exact state log_31 started from.
+So the fixes: camera USB cable (vibration); treat a high-latency boot as a bad boot and restart the stack
+until the driver leg is < 150 ms (`preflight.sh` checks it; 11:10 PST measurement: 36 ms / p50 72 ms and
+EKF2 fusing); `EKF2_DELAY_MAX 400` as margin for spikes (`jetson/px4/skybeta06_ekf2_vision_delay.params`,
+`EKF2_EV_DELAY` stays 70); and the `fly` / `preflight.sh` gate that only says GO with `cs_ev_pos` true and
+a valid local position -- the exact state log_31 started from.
 
 ## Rerun
 

@@ -1,21 +1,23 @@
-# skybeta-06: make EKF2 accept this airframe's slow camera chain (see ../../DEBUG_TAKEOFF.md).
+# skybeta-06: give EKF2 margin for this airframe's vision-latency spikes (see ../../DEBUG_TAKEOFF.md).
 #
-# Measured with the organisers' tools/latency_probe.py on skybeta-06, 2026-11-08:
-#   image -> bridge publish  p50 219 ms (03:21 boot), 290 ms (03:00 boot); organisers' bench Orin: 70 ms.
+# Measured with the organisers' tools/latency_probe.py on skybeta-06, 2026-11-08. The camera chain is
+# BIMODAL PER BOOT: a clean boot gives image -> bridge p50 72 ms (driver leg 36 ms, = the organisers'
+# bench) with spikes to p95 324 / max 418 ms; a bad boot sits at a constant 206-290 ms (backed-up camera
+# queue) and never recovers without a stack restart.
 # EKF2 fuses a vision sample of age A only if  A + EKF2_EV_DELAY < max(EKF2_DELAY_MAX, EKF2_EV_DELAY) + 100 ms
-# (PX4 RingBuffer::pop_first_older_than 100 ms window), so with the fleet values 70 / 200 anything older
-# than ~240 ms is silently dropped -> no local position -> Position mode falls back to Altitude ->
-# flight_interface refuses Offboard -> PX4 position failsafe disarms on the ground.
+# (PX4 RingBuffer::pop_first_older_than 100 ms window). Fleet values 70 / 200 -> anything older than ~235 ms is
+# dropped -> no local position -> Position refused -> position failsafe disarms on the ground.
 #
-# Organisers' rule (fleet_guide.md section 7, host/run.sh banner): "EKF2_EV_DELAY = measured, not assumed".
-# This file sets it to the measured p50 and widens the buffer so samples up to ~350 ms old still fuse.
+# EKF2_EV_DELAY stays at the organisers' measured 70 ms (correct on a clean boot; do NOT raise it to
+# "fix" a bad boot -- fusing 290 ms-old data as 70 ms-old is the toilet-bowl failure their docs warn about;
+# a bad boot is fixed by restarting the stack until jetson/preflight.sh shows the driver leg < 150 ms).
+# EKF2_DELAY_MAX 200 -> 400 widens the buffer so the spikes (up to ~435 ms) are still fused instead of dropped.
 #
 # Load: QGC -> Vehicle Setup -> Parameters -> Tools -> Load from file -> this file -> reboot the FC.
 # Verify in the stack:  ros2 topic echo --once /fmu/out/estimator_status_flags | grep -E "cs_ev_(pos|yaw)"
 #                       (both true)  and  /skybeta/state "local_enu" non-null, "nav_state_name" POSCTL
 #                       with the RC switch on Position while disarmed.
-# Revert: EKF2_EV_DELAY 70, EKF2_DELAY_MAX 200 (the fleet 03b_ekf2_vision.params values).
+# Revert: EKF2_DELAY_MAX 200 (fleet value).
 #
 # Vehicle-Id	Component-Id	Name	Value	Type
-1	1	EKF2_EV_DELAY	250.000000	9
-1	1	EKF2_DELAY_MAX	500.000000	9
+1	1	EKF2_DELAY_MAX	400.000000	9

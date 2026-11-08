@@ -89,11 +89,16 @@ With the FC's values (70 / 200): fused iff A < ~240 ms. Observed: 210 ms (Nov 6)
    the driver crashed. Reseat and strain-relieve the camera USB-C; before every session check
    `lsusb` shows `03e7:f63b` on **Bus 002** and `/sys/bus/usb/devices/2-1.1/speed` = 5000.
    Nothing recovers this without a stack restart.
-2. **PX4 parameters (QGC, organiser-sanctioned "set EV_DELAY to the measured value"):**
-   `EKF2_EV_DELAY` = probe p50 on this airframe (**220-250**; 219 measured 03:21, 290 at 03:00) and
-   `EKF2_DELAY_MAX` = **500** so that samples up to ~350 ms old are still fused
-   (A + 250 < 500 + 100). Reboot the FC. Verify `cs_ev_pos: true`, `xy_valid: true`, and
-   `/skybeta/state local_enu` non-null for a couple of minutes before arming.
+2. **Bad boots (REVISED 11:10 PST after a clean measurement).** The camera latency is bimodal per boot:
+   clean boot = driver leg 36 ms / full chain p50 72 ms (= organisers' bench; EKF2 fuses, `cs_ev_pos` true,
+   measured 11:10 on the team package); bad boot = a constant 206-290 ms (camera queue backed up at
+   startup, never drains; 03:00, 03:21 and the Nov 7 evening). Boot-to-boot it is a coin flip, which is
+   the whole "sometimes works". **Fix: `preflight.sh` measures the driver leg and says BAD BOOT ->
+   `sudo systemctl restart skybeta-stack` until it is < 150 ms.** No parameter change needed for this.
+   Keep `EKF2_EV_DELAY` at the organisers' 70 (correct on a clean boot; raising it to 250 would make a
+   clean boot fuse data as if 180 ms older than it is = their toilet-bowl warning). Only
+   `EKF2_DELAY_MAX` 200 -> **400** (`jetson/px4/skybeta06_ekf2_vision_delay.params`) as margin for the
+   spikes a clean boot still has (p95 324 / max 418 ms), so they are fused instead of dropped.
 3. **No shadow.** Several attempts (00:04, 00:19, 01:02, 01:13, 01:14) ran with v4c in
    `shadow:=true` because the old `record` script put it there: nothing could fly. Removed:
    `record` leaves the boot program LIVE; `--shadow` is opt-in.
