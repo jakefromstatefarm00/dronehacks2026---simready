@@ -121,6 +121,30 @@ bench: 36 ms). Told to the organisers as an outlier airframe.
   are both consistent with the data; either way: **measure before arming, and if it is high, wait or
   restart the stack and measure again.**
 
+## Reproduced in the Gazebo SITL (Sky Beta profile on the GB10, 2026-11-08) -- "EV-too-old: Position unavailable"
+
+Vision relay patched to hold every sample until it is N ms old (header stamp untouched, so PX4 sees
+the age in `vehicle_visual_odometry.timestamp_sample`); pilot emulator arms on Altitude then switches
+to Position like the real pilot; only `EKF2_EV_DELAY` / `EKF2_DELAY_MAX` overridden. 7 runs:
+
+| case | age / EV_DELAY / DELAY_MAX | EKF2 fusing | Position -> Offboard | takeoff | PX4 message |
+|---|---|---|---|---|---|
+| A | 0 / 70 / 200 | yes | yes | yes | Takeoff detected |
+| **B** | **292 / 70 / 200** (the drone) | **no** (no `estimator_aid_src_ev_pos` at all, `dead_reckoning`, `local_position_invalid`) | **refused** | no | **"Switching to Position is currently not available"**, then "Disarmed by auto preflight disarming" |
+| C | 221 / 70 / 200 | no (sim window is ~40 ms shorter than the drone's, see below) | refused | no | TEMPORARILY_REJECTED |
+| C2 | 171 / 70 / 200 | yes | yes | yes | Takeoff detected |
+| D | 292 / 250 / 500 | no (sim) | refused | no | TEMPORARILY_REJECTED |
+| D2 | 292 / 250 / 600 | yes | yes | yes | Takeoff detected |
+
+Case B is the drone's failure to the letter: same message, same flags, same on-ground disarm. The
+acceptance window measured in the sim ULogs is `age + EV_DELAY + dt/2 < horizon_lag + 100 ms`, where
+`horizon_lag` = `estimator_status_flags.timestamp - timestamp_sample` (sim: 158 ms at DELAY_MAX 200 with
+its 240 Hz IMU; drone with 10 ms EKF steps: ~190 -> max fusable age ~225 ms, exactly the 218-fused /
+290-dropped boundary we measured). Translating to the drone: **DELAY_MAX 400 with EV_DELAY 70 fuses
+samples up to ~415 ms old**; DELAY_MAX 500/EV_DELAY 250 would be ~335 ms. `EKF2_DELAY_MAX` is
+reboot-required. Sim diff and per-case artifacts: GB10 `~/ev-delay-study/` and
+`~/dronehacks-2026-gb10/artifacts/ev-delay-{A,B,B2,C,C2,D,D2}-v1/` (not in this repo; organizer packages untouched).
+
 ## Also checked (for completeness)
 
 EKF2 is receiving external vision but not using it (or rejecting it). Things to check live with the
