@@ -22,14 +22,15 @@ Rendering load is unchanged (the rig already subscribes the depth camera).  Then
 program (``python3 -u program [args]``), forwards SIGINT/SIGTERM, stops the bridge and exits
 with the program's code.  Nothing is sent to PX4 by this file.
 
-A recorder (separate process) saves every ``--depth-record-period`` sim seconds a [::4, ::4]
+An optional recorder (separate process, --depth-record-period > 0) saves every ``--depth-record-period`` sim seconds a [::4, ::4]
 float16 depth frame + stamp to <run>/depth/depth-frames.npz (and depth-info.json) for offline
 geometry checks against truth (jolie_course/gazebo/validate_depth.py).  <run> is the parent of
 the program's ``--output`` (launch.sh passes <run>/journal) or ``--depth-record DIR``.
 
 Wrapper options (all others go to the program):
     --depth-record DIR        where to record (default: <program --output>/../depth)
-    --depth-record-period S   sim seconds between recorded frames (default 1.0; 0 = no recording)
+    --depth-record-period S   record one frame per S sim seconds (default 0 = no recorder)
+    --depth-record-delay-s S  start the recorder S wall seconds after the program (default 20)
     --depth-probe-s S         no program: just bridge + record for S wall seconds, exit 0
 """
 from __future__ import annotations
@@ -55,7 +56,8 @@ def log(*a):
 
 
 def split_args(argv):
-    own = {"--depth-record": None, "--depth-record-period": "1.0", "--depth-probe-s": None}
+    own = {"--depth-record": None, "--depth-record-period": "0", "--depth-probe-s": None,
+           "--depth-record-delay-s": "20"}
     rest, i = [], 0
     while i < len(argv):
         if argv[i] in own and i + 1 < len(argv):
@@ -83,24 +85,18 @@ def resolve(path):
     return p
 
 
-def gz_topics():
-    try:
-        out = subprocess.run(["gz", "topic", "-l"], capture_output=True, text=True, timeout=20).stdout
-        return set(out.split())
-    except Exception as exc:                       # noqa: BLE001
-        log("gz topic -l failed:", exc)
-        return set()
+def gz_topics(run_dir):
+    """The rig's own topic list (<run>/gazebo-topics.txt). No `gz topic -l`: that CLI is a
+    ~1-2 s CPU burst at program start, the moment the airframe drops off the bootstrap
+    fixture (v408's OpenVINS broke right there)."""
+    f = Path(run_dir) / "gazebo-topics.txt"
+    return set(f.read_text().split()) if f.exists() else set()
 
 
-def start_bridge(logdir):
-    topics = set()
-    for _ in range(30):                            # the sensors are up long before the program starts
-        topics = gz_topics()
-        if DEPTH_GZ in topics:
-            break
-        time.sleep(1)
-    if DEPTH_GZ not in topics:
-        log(f"WARNING: {DEPTH_GZ} not advertised; bridging it anyway")
+def start_bridge(logdir, run_dir):
+    topics = gz_topics(run_dir)
+    if topics and DEPTH_GZ not in topics:
+        log(f"WARNING: {DEPTH_GZ} not in the rig's topic list; bridging it anyway")
     info_gz = next((t for t in INFO_GZ_CANDIDATES if t in topics), INFO_GZ_CANDIDATES[-1])
     entries = [
         {"gz_topic_name": DEPTH_GZ, "ros_topic_name": DEPTH_ROS, "gz_type_name": "gz.msgs.Image",
@@ -202,6 +198,7 @@ def recorder(outdir, period):
 # ------------------------------------------------------------------------------ main
 def main(argv):
     if argv[:1] == ["--_recorder"]:
+        time.sleep(float(argv[3]))           # let the program and VIO settle first
         recorder(argv[1], float(argv[2]))
         return 0
     own, program, prog_args = split_args(argv)
@@ -216,10 +213,12 @@ def main(argv):
     record.mkdir(parents=True, exist_ok=True)
     period = float(own["--depth-record-period"])
 
-    children = [start_bridge(record)]
-    rec_log = open(record / "depth-recorder.log", "wb")
-    children.append(subprocess.Popen([sys.executable, "-u", str(Path(__file__).resolve()), "--_recorder",
-                                      str(record), str(period)], stdout=rec_log, stderr=subprocess.STDOUT))
+    children = [start_bridge(record, record.parent)]
+    if period > 0:          # opt-in: a second 1 MB/frame subscriber costs CPU the VIO may need
+        rec_log = open(record / "depth-recorder.log", "wb")
+        children.append(subprocess.Popen([sys.executable, "-u", str(Path(__file__).resolve()), "--_recorder",
+                                          str(record), str(period), str(own["--depth-record-delay-s"])],
+                                         stdout=rec_log, stderr=subprocess.STDOUT))
     code = 0
     try:
         if probe is not None:
