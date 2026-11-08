@@ -41,8 +41,9 @@ case "$WHAT" in
          # a wall-clock stamp is clamped to PX4 time (UXRCE_DDS_SYNCT=0, lockstep) or converted exactly
          # (SYNCT=1); a sim-time stamp is compared raw with PX4's clock and read as stale (FlyX run 5).
          FI_EXTRA=(-p use_sim_time:=false)
-         # Jake's sim pilot (lands on Ctrl-C / SIGTERM); land when the node holds low or gives up
-         PILOT_EXTRA=(-p land_states:=LOW_HOLD,FAULT,TAKEN_OVER)
+         # Jake's sim pilot (lands on Ctrl-C / SIGTERM); land when the node holds low or gives up.
+         # WAIT_HEALTH after arming = the node refused this arming (it was not READY): land/disarm too.
+         PILOT_EXTRA=(-p land_states:=LOW_HOLD,FAULT,TAKEN_OVER,WAIT_HEALTH)
          STATUS=/dronehacks_pathplan/status ;;
   *) echo "usage: run.sh suraj|jolie|jolie_flyx|team [args]"; exit 2 ;;
 esac

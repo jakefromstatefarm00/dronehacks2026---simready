@@ -49,7 +49,7 @@ def test_run_sh_team_mode():
     assert "FI_EXTRA=(-p use_sim_time:=false)" in team             # interface: wall clock
     assert "-p use_sim_time:=\"$SIMT\"" in team                     # our node: sim time (run limit)
     assert "-p journal_dir:=\"$OUT\"" in team
-    assert "land_states:=LOW_HOLD,FAULT,TAKEN_OVER" in team
+    assert "land_states:=LOW_HOLD,FAULT,TAKEN_OVER,WAIT_HEALTH" in team
     assert "TEAM_PILOT" not in src and "dronehacks_pathplan.sim_pilot" not in src
     assert "from team_mission.sim.sim_pilot import main" in src
     assert src.index('OUT="$ROOT/flyx_skybeta/runs') < src.index("  team)")   # $OUT set before it is used

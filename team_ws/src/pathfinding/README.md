@@ -84,12 +84,12 @@ Our node only ever touches the four Sky Beta topics, plus `/skybeta/hold` on a f
 
 | State | What is happening | What our node sends |
 |---|---|---|
-| `WAIT_HEALTH` | Waits for **all** of: fresh odometry, `/skybeta/state`, PX4 link, a valid PX4 position, landed, disarmed, `/skybeta/hold` not in force, nobody else commanding. All must hold for 2 s. | **nothing**, so `flight_interface` *cannot* enter Offboard |
-| `READY` | Healthy on the ground. The note says *"pilot may arm"*. | "hold here" (the stream that allows Offboard) |
+| `WAIT_HEALTH` | Waits for **all** of: fresh odometry, `/skybeta/state`, PX4 link, a valid PX4 position, landed, disarmed, no `/skybeta/hold` that someone else asked for, nobody else commanding (incl. two vision bridges), odometry z within 0.1 m of `flight_interface`'s origin. All must hold for 2 s. | **nothing**, so `flight_interface` *cannot* enter Offboard |
+| `READY` | Healthy on the ground. The note says *"pilot may arm"*. Odometry pauses up to 1.5 s keep it READY. Its first setpoint clears a `/skybeta/hold` this node asked for after an earlier FAULT. | "hold here" (the stream that allows Offboard) |
 | `ARMED` | The pilot armed. **The course frame is latched now**: the drone must be on the launch mark, facing up the first corridor. | "hold here" |
 | `TAKEOFF` | The pilot selected Position, so `flight_interface` entered Offboard. Climb on a 0.4 m/s ramp to 0.9 m. | climb setpoints |
 | `NAVIGATE` | Theta\* through the five checkpoints. Carrot 0.5 m ahead, heading ≤ 0.25 rad/s. Odometry paused > 0.3 s: hold. | carrot setpoints |
-| `PAD` → `DESCEND` | Pad reached: centre to ≤ 8 cm, then ramp down at 0.3 m/s to the floor (0.3 m above where SLAM started). | pad setpoints |
+| `PAD` → `DESCEND` | Pad reached: centre to ≤ 8 cm, then ramp down at 0.3 m/s to the floor (0.3 m above where SLAM started). `LOW_HOLD` when odometry z reaches the floor, or 3 s after the ramp does (PX4 flies on EKF2's height). | pad setpoints |
 | `LOW_HOLD` | Holds low over the pad with `land_request: true`. **PILOT: LAND NOW.** PX4 disarms itself after touchdown. | hold low |
 | `DONE` | Disarmed. After 3 s it goes back to `WAIT_HEALTH` with a fresh planner for the next flight. | nothing |
 
@@ -97,10 +97,13 @@ Our node only ever touches the four Sky Beta topics, plus `/skybeta/hold` on a f
 
 | Event | What the node does |
 |---|---|
-| The pilot takes over (sticks / mode switch), or a PX4 failsafe | `TAKEN_OVER`: stops commanding. Offboard returns only after disarm + re-arm. |
-| Odometry gone 3 s, PX4 position invalid, PX4 link lost, `/skybeta/state` silent 5 s, another commander appears | `FAULT`: calls `/skybeta/hold` once and stops commanding. The pilot takes over and lands. |
-| Planner fails, or the 175 s run limit passes | descends where it is and `LOW_HOLD`s: the pilot lands |
-| Pilot armed before the node was READY | not flown: no setpoints, so no Offboard. Disarm and wait for READY. |
+| PX4's failsafe Hold (`AUTO_LOITER`) after a setpoint-stream stall | keeps streaming the last setpoint for up to 5 s: PX4 returns to Offboard by itself (`COM_FAIL_ACT_T`). Still in Hold after 5 s: `TAKEN_OVER`. |
+| The pilot takes over (sticks / mode switch to Position, Altitude, Manual, Land) | `TAKEN_OVER` after 0.5 s: stops commanding. Offboard returns only after disarm + re-arm. |
+| `px4_link` false (no `vehicle_status` for 2 s) | holds the last setpoint, does not advance; `FAULT` after 8 s |
+| Odometry gone 3 s, PX4 position invalid, `/skybeta/state` silent 5 s, another commander appears | `FAULT`: calls `/skybeta/hold` once and stops commanding. The pilot takes over and lands. The hold stays in force until this node is READY again (landed, disarmed, healthy). |
+| Planner fails | descends where it is and `LOW_HOLD`s: the pilot lands |
+| The 175 s run limit passes (TAKEOFF, NAVIGATE, PAD or DESCEND) | `LOW_HOLD` at once, ramping down to the floor: the pilot lands |
+| Pilot armed before the node was READY | not flown: no setpoints. If our last setpoint was < 1.5 s old it calls `/skybeta/hold`, so `flight_interface` refuses Offboard. Disarm and wait for READY. |
 | Our node crashes or is stopped in flight | `flight_interface` keeps holding the last setpoint (a hover). The pilot lands. |
 | `shadow:=true` | maps and plans, never publishes a setpoint. Offboard cannot start. |
 
@@ -149,16 +152,19 @@ ros2 run dronehacks_pathplan report                          # second terminal, 
 
 What `sim.launch.py` does:
 
-- **Starts the drone launch** with `use_sim_time:=true` and `allow_mode_request:=true`. The
-  latter is sim only.
+- **Starts the drone launch** with `use_sim_time:=true` for our node (the run limit is in sim
+  time), `flight_interface` on the wall clock (`interface_use_sim_time:=false`: its Offboard
+  heartbeat stamps are what PX4 checks; sim-time stamps read as stale) and
+  `allow_mode_request:=true` (sim only).
 - **Starts the sim pilot**, which does what the RC pilot does:
   - `pilot:=drone_like` (default): Altitude → arm → Position. This exercises the real
     auto-Offboard path.
   - If the sim refuses Altitude without RC, use `pilot:=direct`: it requests Offboard, then arms.
   - `pilot:=none`: you fly the pilot part with keyboard RC: arm in Altitude, switch to
     Position, and land at `LOW_HOLD`.
-- **Starts Sky Beta's `px4_odom_bridge` only if nothing publishes
-  `/fmu/in/vehicle_visual_odometry`.** The lab normally bridges vision itself.
+- **Starts no vision bridge** (`vision_bridge:=false`): the lab bridges vision itself. Use
+  `vision_bridge:=true` only for a simulator that has none; two bridges make PX4 fuse every
+  sample twice, and our node then refuses READY.
 - **Depth:** `depth_topic` defaults to the lab's `/camera/depth/image_raw`. Pass
   `depth_topic:=''` to fly like the stock drone, on the published map only.
 
@@ -247,7 +253,8 @@ alongside the real one.
 | `frame_latch` | `arm` | `arm` or `slam_origin` (section 3) |
 | `max_flight_s` | `175.0` | run limit from takeoff (rule: 3 min) |
 | `min_altitude_m`, `max_altitude_m`, `max_speed_mps`, `auto_offboard_on_arm`, `allow_mode_request` | as Sky Beta | `flight_interface`'s own; `min_altitude_m` is shared with our node |
-| `use_sim_time` | `false` (sim.launch: `true`) | both nodes |
+| `use_sim_time` | `false` (sim.launch: `true`) | our node |
+| `interface_use_sim_time` | `false` | `flight_interface`; keep false (drone and sims): `check_pipeline` checks its Offboard stamps against PX4's clock |
 | `planner_process` | `true` | planner in its own process (keeps the 20 Hz setpoint stream stall-free) |
 
 Mission constants (climb/descent rates, tolerances, freshness limits) are `MissionConfig` in
@@ -264,7 +271,7 @@ Mission constants (climb/descent rates, tolerances, freshness limits) are `Missi
 | Flies to the wrong place | `check_pipeline`: the `odom_enu vs local_enu` gap. If PX4's frame differs from cuVSLAM's, see Sky Beta `anchor_setpoints` / `odom_to_ned_yaw_offset_rad`. Also: was the drone on the mark facing +y when armed? |
 | Hangs at a corner | `report`: CLAMPED in the PX4 lines, planner `turn`/`stuck` events |
 | `FAULT: odometry lost` | cuVSLAM lost tracking (`/visual_slam/status`): too fast a turn, blank wall, bad light |
-| `offboard_control_signal_lost` in PX4 (sim) | stalls in `report`. If none, try `use_sim_time:=false` for the interface (the lab's PX4 time base). |
+| `offboard_control_signal_lost` in PX4 (sim) | stalls in `report`; `check_pipeline`'s "Offboard stamps vs PX4 time" line (the interface must be on the wall clock). |
 | Lab: two vision bridges | `check_pipeline` FAIL on `/fmu/in/vehicle_visual_odometry`: run `sim.launch.py vision_bridge:=false` |
 
 ---
