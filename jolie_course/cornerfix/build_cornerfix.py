@@ -113,15 +113,26 @@ def corner_rule(planner, cmd, xy, yaw):
     sticky = getattr(planner, "_corner_sign", 0.0)
     route_ends = float(np.linalg.norm(np.diff(path, axis=0), axis=1).sum()) < CORNER_WITHIN_M
     if not (sharp or turning or (sticky and route_ends)):
-        planner._corner_sign = 0.0
+        planner._corner_sign, planner._corner_h = 0.0, None
         return
     # turn direction: the route's; else the corner we are still in (the nose may be ahead of the
     # planner's heading because of the view rule); else the nose's
     sign = float(np.sign(turn)) if sharp else sticky if sticky else float(np.sign(err))
+    if sign != sticky:
+        planner._corner_h = None
     planner._corner_sign = sign
     occ, reason = planner.belief.occ, "corner"
     if CORNER_VIEW and (sharp or (sticky and route_ends)):     # never while merely turning: bounded
-        h = view_heading(occ, planner.spec, xy, float(cmd.yaw), sign)
+        want = float(cmd.yaw)
+        h = view_heading(occ, planner.spec, xy, want, sign)
+        # no back-and-forth within one corner (Gazebo v304: the command flipped 17 -> 48 -> 6 deg
+        # where the planner's own heading saw past a wall end): never turn the command back
+        # against the turn, unless the 0..VIEW_MAX_DEV_DEG band around the planner's heading forces it
+        last = getattr(planner, "_corner_h", None)
+        if last is not None and sign * _wrap(h - last) < 0:
+            dev = float(np.clip(sign * _wrap(last - want), 0.0, np.deg2rad(VIEW_MAX_DEV_DEG)))
+            h = _wrap(want + sign * dev)
+        planner._corner_h = h
         if abs(_wrap(h - cmd.yaw)) > 1e-6:
             cmd.yaw, reason = h, "corner-view"
     near = min(view_distance(occ, planner.spec, xy, yaw), view_distance(occ, planner.spec, xy, cmd.yaw))
