@@ -15,9 +15,9 @@
 # /fmu/in (what was sent to PX4), /tf, /tf_static, /rosout (all node logs). Plus tegrastats (CPU/GPU/
 # RAM/temperature/power, 1 Hz), kernel USB events, notes, and a per-topic check at the end.
 #
-# SAFETY: the boot program (v4c, competitor window) flies autonomously when the pilot arms with the
+# SAFETY: the boot program (competitor window, set in /etc/skybeta/drone.env) flies autonomously when the pilot arms with the
 # switch NOT on Position and then flips to Position on the ground. For RC runs this script switches the
-# competitor window to v4c SHADOW (no setpoints: Offboard can never start) and restores the normal boot
+# competitor window to that same program with shadow:=true (no setpoints: Offboard can never start) and restores the normal boot
 # program on Ctrl-C. --keep-competitor leaves it alone (not advised).
 #
 # Output: ~/team_ws/runs/rc-<label>-<time>/  bag/ (split every 2 GB), notes.txt, check.txt,
@@ -86,26 +86,34 @@ case "$state" in *'"armed": true'*) say "REFUSE: the vehicle is ARMED. Disarm, t
 # ---------------------------------------------------------------- competitor -> shadow
 restore() { :; }
 if [ "$KEEP" -eq 0 ]; then
-  say "switching the competitor window to v4c SHADOW (no setpoints) for the RC run"
+  PKG=$(sed -n 's/^COMPETITOR_PKG=//p' /etc/skybeta/drone.env 2>/dev/null | tail -1)
+  LAU=$(sed -n 's/^COMPETITOR_LAUNCH=//p' /etc/skybeta/drone.env 2>/dev/null | tail -1)
+  [ -n "$PKG" ] && [ -n "$LAU" ] || { say "REFUSE: COMPETITOR_PKG / COMPETITOR_LAUNCH not found in /etc/skybeta/drone.env"; exit 1; }
+  say "switching the competitor window to $PKG $LAU in SHADOW (shadow:=true, no setpoints) for the RC run"
   docker exec "$C" tmux respawn-pane -k -t skybeta:competitor \
-    "bash -c 'source skybeta_env.sh; source /root/team_ws/install/setup.bash; exec ros2 launch jolie_best jolie_best.launch.py shadow:=true'"
+    "bash -c 'source skybeta_env.sh; source /root/team_ws/install/setup.bash; exec ros2 launch $PKG $LAU shadow:=true'"
   restore() {
     say "restoring the competitor window (normal boot program)"
     docker exec "$C" tmux respawn-pane -k -t skybeta:competitor "exec run_competitor.sh"
   }
   for i in $(seq 1 30); do
     sleep 2
-    docker exec "$C" tmux capture-pane -p -J -t skybeta:competitor -S -40 | grep -q "SHADOW" && break
+    docker exec "$C" tmux capture-pane -p -J -t skybeta:competitor -S -40 | grep -qi "shadow" && break
   done
-  if docker exec "$C" tmux capture-pane -p -J -t skybeta:competitor -S -40 | grep -q "SHADOW"; then
+  if docker exec "$C" tmux capture-pane -p -J -t skybeta:competitor -S -40 | grep -qi "shadow"; then
     say "competitor is in SHADOW (no autonomy)"
   else
     say "WARNING could not confirm SHADOW in the competitor window: check it before arming (tmux attach -t skybeta)"
   fi
   sleep 3
 fi
-pubs=$(in_c "timeout 6 ros2 topic info /skybeta/setpoint/pose 2>/dev/null" | grep -c "Publisher count: [1-9]")
-[ "$pubs" -gt 0 ] && say "WARNING something publishes /skybeta/setpoint/pose: an arm -> Position switch could start Offboard"
+# a shadow node still REGISTERS a publisher; what matters is whether setpoints actually flow
+sp=$(in_c "timeout 5 ros2 topic echo --once /skybeta/setpoint/pose 2>/dev/null" | grep -c "position")
+if [ "$sp" -gt 0 ]; then
+  say "WARNING setpoints ARE being sent on /skybeta/setpoint/pose: an arm -> Position switch could start Offboard"
+else
+  say "no setpoints flowing on /skybeta/setpoint/pose (arm -> Position cannot start Offboard)"
+fi
 
 # ---------------------------------------------------------------- notes + side logs
 {
