@@ -75,7 +75,10 @@ class MissionConfig:
     # estimate); only odometry_outage_s lands. Slow topics land after slow_lost_s of silence; a
     # fresh "estimator invalid" still lands at once.
     pose_max_age_s: float = .3
-    odometry_outage_s: float = 3.0
+    # in the air, a stale-odometry *backstop*: PX4 flies on its own estimate meanwhile and a real
+    # estimator failure still lands at once via xy/z_valid. 3 s landed a fake-PX4 run mid-course on a
+    # 1.8 s freeze + 1.2 s odometry gap; FlyX freezes reach ~1.95 s plus ~0.7 s odometry pauses.
+    odometry_outage_s: float = 5.0
     status_max_age_s: float = 3.0          # on the ground; vehicle_status ~1.7 Hz in FlyX
     local_max_age_s: float = 2.0           # on the ground; only its xy/z validity flags are used
     slow_lost_s: float = 10.0              # in the air: status / local position silence that lands

@@ -116,9 +116,11 @@ def test_odometry_pause_holds_and_only_an_outage_lands():
     held = m.tick(tel(t + 1.0, **{**AIR, "odom_t": t + .05}))           # pose ~1 s old
     assert m.state == "NAVIGATE" and held.note.startswith("odometry paused")
     assert np.allclose(held.setpoint[0], flying[0]) and held.command is None
-    out = m.tick(tel(t + 4.0, **{**AIR, "odom_t": t + .05}))            # 4 s: outage
+    out = m.tick(tel(t + 4.0, **{**AIR, "odom_t": t + .05}))            # 4 s: still holding
+    assert m.state == "NAVIGATE" and out.note.startswith("odometry paused")
+    out = m.tick(tel(t + 6.0, **{**AIR, "odom_t": t + .05}))            # 6 s: outage
     assert m.state == "LAND" and out.command.command == CMD_NAV_LAND and "odometry stale" in m.events[-1]["note"]
-    assert m.tick(tel(t + 4.1, **AIR)).command is None                   # not re-sent within resend_s
+    assert m.tick(tel(t + 6.1, **AIR)).command is None                   # not re-sent within resend_s
 
 
 def test_pose_stamped_just_after_the_control_tick_is_fresh():
