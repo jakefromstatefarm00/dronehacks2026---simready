@@ -99,6 +99,7 @@ class MissionConfig:
     takeoff_timeout_s: float = 10.0        # then accept being within takeoff_loose_m of the altitude
     takeoff_loose_m: float = .25
     plan_above_m: float = .5               # no mapping/planning below this (depth from the floor)
+    plan_in_takeoff: bool = False          # [v5] False: map and plan only from NAVIGATE (at altitude); v4c True
     # Visual odometry dies on fast turns: Suraj's flyx_course data had 30 of 40 VIO losses above
     # 0.35 rad/s, and 3/3 Gazebo completions at 0.25; our FlyX run 6 lost xy after turning in place.
     yaw_rate_max: float = .25              # rad/s cap on the commanded heading's rate of change
@@ -342,7 +343,10 @@ class Mission:
             return False
         if self.state in ("NAVIGATE", "SHADOW"):
             return True
-        return self.state == "TAKEOFF" and self.pose_course[0][2] > self.cfg.plan_above_m
+        # [v5 plan_in_takeoff=False] Gazebo v909 (v4c): depth taken while climbing in TAKEOFF made 7
+        # phantom cells in the first checkpoint's goal pocket ("no goal cell"), so the drone forgot its map
+        # and looked around in place at the launch mark right after takeoff - FlyX run 11's opening too.
+        return self.cfg.plan_in_takeoff and self.state == "TAKEOFF" and self.pose_course[0][2] > self.cfg.plan_above_m
 
     def _resend(self, now):
         """True once every resend_s: VehicleCommand goes over a best-effort link and may be lost."""

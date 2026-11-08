@@ -96,6 +96,18 @@ def test_corner_view_leads_into_the_turn_at_most_40_deg():
     assert near.yaw == np.pi / 2                       # never on a near miss / back out
 
 
+def test_no_mapping_or_planning_during_takeoff_by_default():
+    """[v5] Gazebo v909: depth taken while climbing made phantoms in checkpoint 1's goal pocket ->
+    forget + look around at the launch mark. v5 maps and plans only from NAVIGATE; v4c also in TAKEOFF."""
+    from flyx.mission import Mission, MissionConfig
+    for cfg, expect in ((MissionConfig(), False), (MissionConfig(plan_in_takeoff=True), True)):
+        m = Mission(planner=None, cfg=cfg)
+        m.state, m.pose_course = "TAKEOFF", (np.array([-2.5, .9, .7]), np.pi / 2, np.eye(3))
+        assert bool(m.planning_allowed()) is expect
+        m.state = "NAVIGATE"
+        assert m.planning_allowed()
+
+
 def test_v5_options_default_on_and_known():
     from pathplan.planner_process import V5_OPTIONS
     assert set(V5_OPTIONS) == {"plan_cache", "look_guard", "corner_view", "forget_votes", "forget_snap",
