@@ -69,13 +69,38 @@ The organisers' own procedure (`~/skybeta/docs/fleet_guide.md` §7, `CLAUDE.md`,
 airframe, set the value in QGC (range 0-300 ms), reboot the FC. Bench Orin: 70 ms; drone 16: 60 ms.
 This airframe: ~280-290 ms, a 4x outlier ("a drone that is an outlier here is telling you something").
 
-Two fixes, do both:
-1. **Now (QGC, organiser-sanctioned):** `EKF2_EV_DELAY` = measured p50 (~290; cap 300), reboot FC.
-   Check `cs_ev_pos` becomes true and `/skybeta/state local_enu` is non-null before arming.
-2. **Find the 200 ms:** `ev_latency_experiment.sh` compares the probe with the competitor window
-   running vs idle. If idle drops it to ~70 ms, our nodes (depth relay / v4c depth subscription)
-   starve the camera driver and we fix that on our side; if not, it is the camera driver / Jetson
-   and the organisers need to know.
+### EKF2's acceptance rule (from the PX4 source; matches every observation today)
+
+EKF2 fuses an observation only when the delayed time horizon reaches it, and `RingBuffer::
+pop_first_older_than` only returns samples at most **100 ms** older than the horizon. The horizon
+sits `max(EKF2_DELAY_MAX, EKF2_EV_DELAY, ...)` (+~10 ms) behind now, and the sample is stamped
+`timestamp_sample - EKF2_EV_DELAY`. So a vision sample of age `A` is fused iff
+
+    A + EKF2_EV_DELAY  <  max(EKF2_DELAY_MAX, EKF2_EV_DELAY) + 100 ms
+
+With the FC's values (70 / 200): fused iff A < ~240 ms. Observed: 210 ms (Nov 6) fused, 218 ms
+(03:21 today) fused, 290 ms (03:00 today) dropped. **Raising EKF2_EV_DELAY alone does not help**
+(both sides grow); EKF2_DELAY_MAX must grow as well.
+
+### The fixes (all three are needed)
+
+1. **Camera USB link (hardware).** At 03:22:31 the OAK fell off USB3 at the moment of arming
+   (`dmesg`: reset SuperSpeed / USB disconnect; back on the USB2 bus as unbooted `03e7:2485`), and
+   the driver crashed. Reseat and strain-relieve the camera USB-C; before every session check
+   `lsusb` shows `03e7:f63b` on **Bus 002** and `/sys/bus/usb/devices/2-1.1/speed` = 5000.
+   Nothing recovers this without a stack restart.
+2. **PX4 parameters (QGC, organiser-sanctioned "set EV_DELAY to the measured value"):**
+   `EKF2_EV_DELAY` = probe p50 on this airframe (**220-250**; 219 measured 03:21, 290 at 03:00) and
+   `EKF2_DELAY_MAX` = **500** so that samples up to ~350 ms old are still fused
+   (A + 250 < 500 + 100). Reboot the FC. Verify `cs_ev_pos: true`, `xy_valid: true`, and
+   `/skybeta/state local_enu` non-null for a couple of minutes before arming.
+3. **No shadow.** Several attempts (00:04, 00:19, 01:02, 01:13, 01:14) ran with v4c in
+   `shadow:=true` because the old `record` script put it there: nothing could fly. Removed:
+   `record` leaves the boot program LIVE; `--shadow` is opt-in.
+
+Experiment (`jetson/ev_latency_experiment.sh`, 03:21): driver leg 206 ms with the competitor
+running **and** idle -> our nodes are not the cause; it is the camera driver / Jetson (organisers'
+bench: 36 ms). Told to the organisers as an outlier airframe.
 
 ## Also checked (for completeness)
 
