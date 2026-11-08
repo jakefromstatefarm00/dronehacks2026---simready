@@ -140,7 +140,11 @@ LEVELS = {
 # came from yaw rate 0.46-0.80 rad/s WHILE MOVING 0.41-0.53 m/s at the first 90 deg corner, so the
 # calibrated levels use the yaw-rate x speed hazard (vio_model "yawspeed").
 CAL_POINT = _dyn(kp_xy=(.952, .952), tau=(.83, .83), vel_i=(.66, .66), delay_steps=(0, 0), k_yaw=(4.04, 4.04),
-                 yaw_tau=(.109, .109), max_yaw_rate=(1.41, 1.41))
+                 yaw_tau=(.109, .109), max_yaw_rate=(1.41, 1.41),
+                 # Gazebo EKF jitter (measured 0.6 mm, 0.7 mm/s). Exactly zero noise is not physical and
+                 # exposes a planner freeze: a drone that settles perfectly still on a degenerate plan
+                 # gets the same carrot forever (no motion -> no replan); seen at tau 0.45-0.6.
+                 pos_noise=(.0006, .0006), vel_noise=(.0007, .0007))
 CAL_RANGES = dict(kp_xy=(.8, 1.25), kp_z=(.85, 1.15), tau=(.3713, 1.0477), vel_i=(0., .9956), max_accel=(1., 3.),
                   px4_max_speed=(1., 2.), k_yaw=(2.6292, 5.4606), max_yaw_rate=(.6, 1.62), yaw_tau=(.0558, .1739),
                   delay_steps=(0, 6), pos_noise=(.002, .02), vel_noise=(.01, .06), drift_per_sqrt_m=(0., .0541),
@@ -148,6 +152,12 @@ CAL_RANGES = dict(kp_xy=(.8, 1.25), kp_z=(.85, 1.15), tau=(.3713, 1.0477), vel_i
 LEVELS.update({
     # Gazebo-like: published course, fitted point dynamics, ideal estimate, yaw x speed VIO hazard
     "C0": Level("C0", dyn=CAL_POINT, vio_scale=1.0, vio_model="yawspeed"),
+    # Gazebo-measured spread (not the YAML's 2x cuVSLAM margin): drift <= 0.027 m/sqrt(m) (measured run
+    # max), time drift <= 0.0123, delay 0-3 steps, + FlyX stalls/pauses, walls +-5 cm, 0-1 pole
+    "C1": Level("C1", wall_shift=.05, clutter=(0, 1), depth_noise=.003, depth_lag=(0, 1), stall_rate=.63,
+                stall_long_p=.03, pause_every_s=25, vio_scale=1.0, vio_model="yawspeed",
+                dyn=dict(CAL_RANGES, delay_steps=(0, 3), pos_noise=(.001, .005), drift_per_sqrt_m=(0., .027),
+                         drift_rate=(0., .0123), yaw_drift_rate=(0., .0017), disturbance=(0., .1))),
     # the full calibrated ranges + what FlyX measured (stalls, pauses), walls +-10 cm, 1-2 poles
     "C2": Level("C2", wall_shift=.10, clutter=(1, 2), depth_noise=.006, depth_lag=(0, 1), stall_rate=.63,
                 stall_long_p=.03, pause_every_s=25, vio_scale=1.0, vio_model="yawspeed", dyn=dict(CAL_RANGES)),

@@ -20,7 +20,7 @@ import numpy as np
 import analyze
 from run_sweep import RANGES
 
-LEVEL_T = "L2"
+LEVEL_T = "C0"         # course time is ranked at the calibrated nominal (set with --time-level)
 
 
 def per_config(summary):
@@ -86,7 +86,10 @@ def main(argv=None):
     ap.add_argument("--finalists", type=int, default=0)
     ap.add_argument("--tol", type=float, default=0.0, help="completion tolerance vs base (percentage points)")
     ap.add_argument("--out", type=Path)
+    ap.add_argument("--time-level", default="C0")
     a = ap.parse_args(argv)
+    global LEVEL_T
+    LEVEL_T = a.time_level
     known = {}
     for p in a.configs:
         for c in json.loads(p.read_text()):
@@ -95,7 +98,7 @@ def main(argv=None):
     front = pareto(stats)
     ok = [c for c in stats if beats_base(stats, c, tol=a.tol)]
     print(f"{len(stats)} configs, Pareto front {len(front)}, completion >= base everywhere: {len(ok)}")
-    hdr = f"{'config':10s} {'compl':>6s} {'worst':>6s} {'t_L2':>6s} {'p5clr':>6s} {'touch':>6s} {'vio':>5s}  levels"
+    hdr = f"{'config':10s} {'compl':>6s} {'worst':>6s} {'t_' + LEVEL_T:>6s} {'p5clr':>6s} {'touch':>6s} {'vio':>5s}  levels"
     rank = sorted(stats, key=lambda c: (-stats[c]["completion"], stats[c]["time"]))
     print(hdr)
     for c in ["base"] + [c for c in rank if c != "base"][:40]:
