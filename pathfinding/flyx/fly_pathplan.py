@@ -61,10 +61,33 @@ def parse_args(argv=None):
     ap.add_argument("--launch-heading", type=float, default=1.5707963, help="course-frame heading on the mark, rad")
     ap.add_argument("--launch-body-agl", type=float, default=.05)
     ap.add_argument("--output", type=Path, default=ROOT / "runs" / f"flyx-{time.strftime('%Y%m%d-%H%M%S')}")
+    ap.add_argument("--turns", choices=["on", "off"], default="off",
+                    help="speed-gated sharper turning when slow (off = the base program exactly)")
+    ap.add_argument("--yaw-speed-max", type=float, default=.10, help="turns: bound on yaw rate x speed, rad m/s^2")
+    ap.add_argument("--yaw-rate-slow-max", type=float, default=.50, help="turns: yaw-rate ceiling when slow, rad/s")
+    ap.add_argument("--yaw-rate-in-place-max", type=float, default=.35, help="turns: yaw-rate ceiling turning in place")
+    ap.add_argument("--explore-look-deg", type=float, default=0.0,
+                    help="turns: one-off look this far past the route heading at slow corners (0 = off)")
     ap.add_argument("--wall-clock", action="store_true",
                     help="use the system clock instead of /clock (only for tests without a simulator)")
     return ap.parse_args(argv)
 
+
+
+def turns_config(a):
+    """MissionConfig fields for --turns (empty for off: the v3 defaults)."""
+    if a.turns != "on":
+        return {}
+    return dict(turn_gate=True, yaw_speed_max=a.yaw_speed_max, yaw_rate_slow_max=a.yaw_rate_slow_max,
+                yaw_rate_in_place_max=a.yaw_rate_in_place_max, explore_look_deg=a.explore_look_deg)
+
+
+def planner_options(a):
+    """Planner-child options: None = planner_process.V5_OPTIONS; --turns on adds the view / wall report
+    the mission's turn gate needs (the other [v5] switches keep their defaults)."""
+    if a.turns != "on":
+        return None
+    return {"view_m": True}
 
 
 def print_summary(mission, planner, node, journal_path):
@@ -74,6 +97,10 @@ def print_summary(mission, planner, node, journal_path):
     lines.append("checkpoints cleared: " + (", ".join(c["name"] for c in planner.cleared) or "none")
                  + f"  ({len(planner.cleared)}/5)")
     lines.append("states: " + " -> ".join(e["to"] for e in mission.events))
+    if mission.cfg.turn_gate:
+        ts = mission.turn_stats
+        lines.append(f"turns: on (yaw x speed <= {mission.cfg.yaw_speed_max}); highest cap {ts['cap_max']:.2f} rad/s, "
+                     f"highest commanded yaw x speed {ts['yv_cmd_max']:.3f}, exploratory looks {ts['look']}")
     if node.px4_modes:
         lines.append("PX4 mode changes (nav_state / failsafe / flags):")
         lines += [f"  {m}" for m in node.px4_modes[-4:]]
@@ -100,7 +127,7 @@ def main(argv=None):
     a = parse_args(argv)
     from pathplan.ros_node import build_planner
     planner = PlannerProcess(build_planner, (a.planner, a.altitude, a.camera_offset, a.camera_pitch_down_deg,
-                                             a.carrot))     # first: it forks
+                                             a.carrot, planner_options(a)))     # first: it forks
     import rclpy
     from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
     from rclpy.clock import Clock, ClockType
@@ -114,7 +141,8 @@ def main(argv=None):
 
     mission = Mission(planner, MissionConfig(
         execute=a.execute, altitude=a.altitude, carrot_m=a.carrot, launch_xy=tuple(a.launch_xy),
-        launch_heading=a.launch_heading, launch_body_agl=a.launch_body_agl, pad_xy=tuple(planner.pad_xy)))
+        launch_heading=a.launch_heading, launch_body_agl=a.launch_body_agl, pad_xy=tuple(planner.pad_xy),
+        **turns_config(a)))
     a.output.mkdir(parents=True, exist_ok=False)
     journal = open(a.output / "journal.jsonl", "w", encoding="utf-8")
 

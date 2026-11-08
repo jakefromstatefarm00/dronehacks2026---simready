@@ -99,5 +99,5 @@ def test_corner_view_leads_into_the_turn_at_most_40_deg():
 def test_v5_options_default_on_and_known():
     from pathplan.planner_process import V5_OPTIONS
     assert set(V5_OPTIONS) == {"plan_cache", "look_guard", "corner_view", "forget_votes", "forget_snap",
-                               "solid_relax", "solid_off", "soft_margin"}
+                               "solid_relax", "solid_off", "soft_margin", "view_m"}
     assert V5_OPTIONS["plan_cache"] is True

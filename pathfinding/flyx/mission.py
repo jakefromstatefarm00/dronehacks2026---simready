@@ -18,7 +18,9 @@ Refused Offboard or arm -> FAILED before anything moved.  All times are simulati
 """
 from __future__ import annotations
 
+from collections import deque
 from dataclasses import dataclass, field
+import math
 
 import numpy as np
 
@@ -101,6 +103,58 @@ class MissionConfig:
     # 0.35 rad/s, and 3/3 Gazebo completions at 0.25; our FlyX run 6 lost xy after turning in place.
     yaw_rate_max: float = .25              # rad/s cap on the commanded heading's rate of change
     slow_turn_deg: float = 90.0            # carrot shrinks to 30 % as the heading error reaches 70 % of this
+    # ---- speed-gated turning ("turns"; all off by default = v3 exactly). Gazebo: every VIO divergence
+    # began at the first corridor-to-maze corner yawing 0.46-0.8 rad/s WHILE moving 0.4-0.5 m/s; the
+    # base's 14 successes peaked at yaw rate x speed 0.105-0.127, the failure 0.130. So turn faster only
+    # when slow: cap = min(ceiling, yaw_speed_max / measured horizontal speed), see gated_yaw_cap().
+    turn_gate: bool = False
+    yaw_speed_max: float = .10             # rad m/s^2: hard bound on commanded yaw rate x measured speed
+    yaw_rate_slow_max: float = .50         # rad/s ceiling while moving slowly (nearly stopped)
+    yaw_rate_in_place_max: float = .35     # rad/s ceiling turning in place (stop + turn: Gazebo v131 VIO loss)
+    speed_unknown_m_s: float = .60         # speed assumed when it cannot be measured (cap = 0.10 / 0.6)
+    # the speed the clamp uses is max(measured, predicted): PX4 flies at ~MPC_XY_P (0.95 default) x the
+    # setpoint distance, so a long carrot means the drone is about to speed up (measured speed lags)
+    speed_per_setpoint_m: float = .95
+    # bound the heading setpoint's lead over the measured heading to cap x yaw_lead_s: PX4's yaw loop
+    # catches up a lead at its own rate, so an unbounded backlog would keep turning fast after the
+    # cap dropped (offline: true rate 0.63 rad/s and yaw x speed 0.14 with a 0.5 rad/s cap, no bound)
+    yaw_lead_s: float = .5
+    # FlyX v3+view failure at the tunnel approach (escape crawl + look-around spin near walls, then VIO
+    # lost): while the camera view (now or at the commanded heading) is shorter than short_view_m,
+    # never turn faster than yaw_rate_short_view (sim-time rad/s; v3 flies 0.25 wall = ~0.31 sim in FlyX)
+    short_view_m: float = 1.0
+    yaw_rate_short_view: float = .25
+    near_wall_m: float = .55               # ... and while any believed obstacle is closer than this (FlyX: the
+                                           # in-place look-around beside the tube walls lost VIO)
+    # exploratory look when slow at a corner: overshoot the route heading toward the turn's side by
+    # this much (0 = off), once per corner, while slower than explore_speed_m_s
+    explore_look_deg: float = 0.0
+    explore_speed_m_s: float = .15
+    explore_min_turn_deg: float = 25.0     # only when the route heading is this far from the nose
+    explore_hold_s: float = 1.5            # give up the look after this long (lab wall s)
+    explore_rearm_m: float = .6            # next look only after moving this far
+    # cornerfix "view" port (first-corner-vio): the planner child may lead the heading up to 40 deg into
+    # a sharp turn toward a far view (PlannerProcess option corner_view) and tags "corner...-slow" when
+    # the camera faces the map closer than 1.5 m; such commands fly a shorter carrot (1.0 = off)
+    corner_carrot_scale: float = 1.0
+    corner_carrot_min_m: float = .12
+
+
+def gated_yaw_cap(speed, in_place, cfg, moving_speed=None):
+    """Commanded heading-rate cap (rad/s). Deterministic, outside any learned code: with
+    cfg.turn_gate it never lets cap x speed exceed cfg.yaw_speed_max, nor the absolute ceilings;
+    without it, cfg.yaw_rate_max (v3). ``speed`` (the conservative speed for the bound) None =
+    unknown (assume cfg.speed_unknown_m_s). ``moving_speed`` (the measured speed, default
+    ``speed``) only chooses the ceiling: nearly stopped or turning in place -> the moderate in-place
+    ceiling (a stop followed by a turn in place lost VIO in Gazebo v131), rising linearly to the
+    slow-moving ceiling at 0.15 m/s. It can only lower the cap."""
+    if not cfg.turn_gate:
+        return cfg.yaw_rate_max
+    v = cfg.speed_unknown_m_s if speed is None or not math.isfinite(speed) else max(0.0, float(speed))
+    m = v if moving_speed is None or not math.isfinite(moving_speed) else max(0.0, float(moving_speed))
+    lo, hi = cfg.yaw_rate_in_place_max, cfg.yaw_rate_slow_max
+    ceiling = lo if in_place else lo + (hi - lo) * min(1.0, max(0.0, (min(m, v) - .05) / .10))
+    return float(min(ceiling, cfg.yaw_speed_max / max(v, 1e-6)))
 
 
 class Mission:
@@ -127,6 +181,19 @@ class Mission:
         self._sp_yaw_t = None
         self._offboard_lost_since = None
         self.pose_course = None            # (xyz, yaw, rotation) for depth projection
+        self._speed_hist = deque(maxlen=20)   # (odometry arrival t, course xy) for the measured speed
+        self.speed = None                  # measured horizontal speed, m/s (None = unknown)
+        self.yaw_cap = self.cfg.yaw_rate_max    # last applied heading-rate cap
+        self.turn_stats = {"look": 0, "cap_max": 0.0, "yv_cmd_max": 0.0}
+        self._look = None                  # (target yaw, start t) of an exploratory look
+        self._look_from = None             # xy where the last look started
+        self._now = None
+        self.yaw_rate_cmd = 0.0            # last commanded heading rate, rad/s
+        self.speed_for_cap = None          # speed the last cap was computed from (max of measured, predicted)
+        self.rtf = 1.0                     # sim seconds per wall second, measured (clipped to [0.5, 1])
+        self.view_m = None                 # turns build: how far the camera sees (planner belief map)
+        self.wall_m = None                 # turns build: distance to the nearest believed obstacle
+        self._clock_hist = deque(maxlen=200)
 
     # ---------------------------------------------------------------- helpers
     def _go(self, state, now, note=""):
@@ -156,6 +223,43 @@ class Mission:
             return f"estimator invalid (xy_valid={tel.xy_valid}, z_valid={tel.z_valid})"
         return ""
 
+    def _measure_speed(self, tel):
+        """Horizontal speed from odometry positions (any contract: PX4 odometry or cuVSLAM pose):
+        the larger of the last ~0.15 s and ~0.3 s averages (the conservative one for the clamp).
+        None when odometry is stale or there is not enough history."""
+        h = self._speed_hist
+        if not h or tel.odom_t > h[-1][0]:
+            h.append((tel.odom_t, np.asarray(self.pose_course[0][:2], float).copy()))
+        if tel.now - tel.odom_t > self.cfg.pose_max_age_s:
+            self.speed = None
+            return
+        t1, p1 = h[-1]
+        best = None
+        for window in (.15, .3):
+            old = [e for e in h if t1 - e[0] >= window]
+            if old and t1 - old[-1][0] <= window + .35:
+                t0, p0 = old[-1]
+                v = float(np.linalg.norm(p1 - p0)) / (t1 - t0)
+                best = v if best is None else max(best, v)
+        self.speed = best
+
+    def _update_rtf(self, tel):
+        """Sim seconds per wall second over the last >= 3 s of ticks, clipped to [0.5, 1.0] (1.0 when
+        sim time is unknown; 0.5 = conservative while not yet measured or when sim time jumps)."""
+        if tel.sim_now is None:
+            self.rtf = 1.0
+            return
+        h = self._clock_hist
+        h.append((tel.now, tel.sim_now))
+        w1, s1 = h[-1]
+        old = [e for e in h if w1 - e[0] >= 3.0]
+        if not old:                         # not measured yet: assume the slowest (conservative)
+            self.rtf = .5
+            return
+        w0, s0 = old[-1]
+        r = (s1 - s0) / (w1 - w0)
+        self.rtf = float(np.clip(r, .5, 1.0)) if math.isfinite(r) and 0.0 < r < 2.0 else .5
+
     def _healthy(self, tel):
         return not self._unhealthy_reason(tel)
 
@@ -174,6 +278,7 @@ class Mission:
         xyz, yaw, _ = self.pose_course
         cmd = self.planner.update(xyz[:2], yaw)
         self.target = target_from_command(cmd, xyz[:2], yaw, self._carrot_for(cmd, yaw))
+        self.target = self._explore(cmd, xyz, yaw, self.target)
         if cmd.mode == "turn":
             # hold the spot where the turning began: re-holding "here" every step let the vehicle
             # drift 11 cm during a look-around in FlyX run 6, toward a wall
@@ -182,17 +287,53 @@ class Mission:
             self.target = (self._turn_xy, self.target[1])
         else:
             self._turn_xy = None
+        self.view_m = getattr(cmd, "view_m", None)       # turns build: camera view on the belief map, m
+        self.wall_m = getattr(cmd, "wall_m", None)       # turns build: nearest believed obstacle, m
         self.planner_status = cmd.mode
         return cmd
+
+    def _explore(self, cmd, xyz, yaw, target):
+        """Exploratory look (cfg.explore_look_deg > 0): slow, and the route turns away from the
+        nose -> face explore_look_deg PAST the route heading, toward the side the route turns to
+        (the new passage and its side openings), once per corner. The carrot still follows the
+        route; it stays short because the nose is off the route (_carrot_for), so the drone stays
+        slow during the look. Released once reached, after explore_hold_s, when faster than
+        explore_speed_m_s, or when the planner stops moving. The yaw rate is still gated_yaw_cap."""
+        c = self.cfg
+        if c.explore_look_deg <= 0 or self.state != "NAVIGATE" or cmd.mode != "move" or cmd.yaw is None:
+            self._look = None
+            return target
+        now = self._now if self._now is not None else 0.0
+        xy = np.asarray(xyz[:2], float)
+        fast = self.speed is None or self.speed / self.rtf > c.explore_speed_m_s
+        if self._look is not None:
+            look_yaw, t0 = self._look
+            if abs(_wrap(look_yaw - yaw)) < np.deg2rad(5) or now - t0 > c.explore_hold_s or fast:
+                self._look = None
+                return target
+            return (target[0], look_yaw)
+        off = _wrap(cmd.yaw - yaw)
+        rearmed = self._look_from is None or np.linalg.norm(xy - self._look_from) >= c.explore_rearm_m
+        if not fast and rearmed and abs(off) >= np.deg2rad(c.explore_min_turn_deg):
+            look_yaw = _wrap(cmd.yaw + np.sign(off) * np.deg2rad(c.explore_look_deg))
+            self._look, self._look_from = (look_yaw, now), xy.copy()
+            self.turn_stats["look"] += 1
+            return (target[0], look_yaw)
+        return target
 
     def _carrot_for(self, cmd, yaw):
         """Setpoint distance: shorter while the nose is still turning toward the route, so the
         drone slows through corners instead of swinging wide (0.5 m aligned, 0.15 m at 60 deg)."""
         c = self.cfg
+        if cmd.mode == "move" and cmd.reason == "back out":
+            return min(c.carrot_m, .25)                 # turns build: back out slowly, heading held
         if cmd.mode != "move" or cmd.yaw is None:
             return c.carrot_m
         off = abs(float(np.arctan2(np.sin(cmd.yaw - yaw), np.cos(cmd.yaw - yaw))))
-        return c.carrot_m * float(np.clip(1.0 - off / np.deg2rad(c.slow_turn_deg), .3, 1.0))
+        carrot = c.carrot_m * float(np.clip(1.0 - off / np.deg2rad(c.slow_turn_deg), .3, 1.0))
+        if c.corner_carrot_scale < 1.0 and str(cmd.reason).startswith("corner") and str(cmd.reason).endswith("-slow"):
+            carrot = max(c.corner_carrot_min_m, c.corner_carrot_scale * carrot)     # cornerfix port
+        return carrot
 
     def planning_allowed(self):
         """Map and plan only in flight (or in shadow): on the ground the camera sits 5 cm up and
@@ -219,6 +360,9 @@ class Mission:
         c, now = self.cfg, tel.now
         if self.frame is not None and tel.odom_t is not None:
             self.pose_course = odom_to_course(self.frame, tel.position_ned, tel.q_ned_frd)
+            self._measure_speed(tel)
+        self._now = now
+        self._update_rtf(tel)
         healthy = self._healthy(tel)
 
         if self.state == "WAIT_HEALTH":
@@ -333,15 +477,53 @@ class Mission:
         self._last_sp = sp
         return Output(self.state, sp, note=f"centring over the pad ({off:.2f} m)")
 
+    def short_view_cap(self):
+        """Turns build: yaw_rate_short_view while the planner reports a short camera view, else inf."""
+        c = self.cfg
+        if c.turn_gate and ((self.view_m is not None and self.view_m < c.short_view_m)
+                            or (self.wall_m is not None and self.wall_m < c.near_wall_m)):
+            return c.yaw_rate_short_view
+        return float("inf")
+
     def _limit_yaw(self, setpoint, tel):
         """Rate-limit the commanded heading to yaw_rate_max (starts from the vehicle's yaw)."""
         position, yaw = setpoint
         now = tel.now
         if self._sp_yaw is None:
             self._sp_yaw, self._sp_yaw_t = yaw_from_q_ned(tel.q_ned_frd), now
-        step = self.cfg.yaw_rate_max * max(0.0, min(now - self._sp_yaw_t, .2))
+        c = self.cfg
+        dt = max(0.0, min(now - self._sp_yaw_t, .2))
+        if c.turn_gate:
+            # Physical units: the program's clock is the lab WALL clock, but the airframe moves in sim
+            # time (FlyX ~0.8x, GB10 ~0.83x real time), so a wall-clock rate limit yaws 1/rtf faster in
+            # sim time and wall-clock speed reads rtf slower. Convert both; rtf = 1 on the drone.
+            rtf = self.rtf
+            measured = c.speed_unknown_m_s if self.speed is None else self.speed / rtf
+            dist = float(np.hypot(position[0] - tel.position_ned[0], position[1] - tel.position_ned[1]))
+            speed = max(measured, c.speed_per_setpoint_m * dist)     # PX4 P loop: about to fly this fast
+            cap = gated_yaw_cap(speed, self.planner_status == "turn", c, measured)    # rad per SIM second
+            cap = min(cap, self.short_view_cap())                     # near walls: no faster than v3
+            step = cap * rtf * dt
+        else:
+            rtf, speed = 1.0, self.speed
+            cap = gated_yaw_cap(speed, self.planner_status == "turn", c)
+            step = cap * dt
+        self.speed_for_cap = speed
+        self.yaw_cap = cap
         err = float(np.arctan2(np.sin(yaw - self._sp_yaw), np.cos(yaw - self._sp_yaw)))
-        new = self._sp_yaw + float(np.clip(err, -step, step))
+        turned = float(np.clip(err, -step, step))
+        if c.turn_gate and turned != 0.0:
+            # never grow the setpoint's lead over the vehicle's heading beyond cap x yaw_lead_s
+            psi = yaw_from_q_ned(tel.q_ned_frd)
+            lead = float(np.arctan2(np.sin(self._sp_yaw + turned - psi), np.cos(self._sp_yaw + turned - psi)))
+            if abs(lead) > cap * c.yaw_lead_s and np.sign(lead) == np.sign(turned):
+                turned = 0.0
+        self.yaw_rate_cmd = abs(turned) / (dt * rtf) if dt > 0 else 0.0     # commanded heading rate (sim s)
+        st = self.turn_stats
+        st["cap_max"] = max(st["cap_max"], cap)
+        if speed is not None:
+            st["yv_cmd_max"] = max(st["yv_cmd_max"], self.yaw_rate_cmd * speed)
+        new = self._sp_yaw + turned
         self._sp_yaw, self._sp_yaw_t = float(np.arctan2(np.sin(new), np.cos(new))), now
         return position, self._sp_yaw
 
@@ -383,3 +565,7 @@ class Mission:
             self._land_sent = True
             return Output(self.state, command=Command.land(), note=why)
         return Output(self.state)
+
+
+def _wrap(a):
+    return float(np.arctan2(np.sin(a), np.cos(a)))

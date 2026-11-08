@@ -51,6 +51,7 @@ V5_OPTIONS = {
     "solid_relax": False,    # no inferred-solid cells behind a hit within SOLID_MIN_WALL_M of a published wall
     "solid_off": False,      # no inferred-solid cells at all (proven's rule: suspect cells only)
     "soft_margin": None,     # planning soft margin override, m (v4c 0.30; proven 0.15); None = keep
+    "view_m": False,         # report view length / nearest obstacle with each command (the mission's turn gate)
 }
 SOLID_MIN_WALL_M = .45       # [v5 solid_relax] (turns-explore 0244404: a misregistered wall return just beyond
                              # the 0.25 m snap must not seal a narrow published opening such as the tube mouth)
@@ -289,6 +290,14 @@ def planner_process(conn, build_planner):
             # half-length step while stepping out of the keep-out after a near miss
             step = carrot_m * (.5 if cmd.reason == "near miss" else 1.0)
             cmd.path = safe_carrot_path(planner.belief.cost, spec, np.asarray(xy, float), cmd.path, step)
+        if opts["view_m"] and cmd.mode in ("move", "turn"):
+            # [v5 turn gate, turns-explore 7aee111] how far the camera sees now and at the commanded heading,
+            # and the nearest believed obstacle (belief map): the mission's gate turns no faster than v4c's
+            # 0.25 rad/s while the view is short or a wall is near
+            h = float(cmd.yaw) if cmd.yaw is not None else float(yaw)
+            cmd.view_m = min(view_distance(planner.belief.occ, spec, xy, float(yaw)),
+                             view_distance(planner.belief.occ, spec, xy, h))
+            cmd.wall_m = planner._wall_distance(window=.8)   # nearest believed obstacle in any direction
         conn.send((cmd, planner.events, planner.cleared, 1e3 * (time.perf_counter() - t0), quality))
 
 

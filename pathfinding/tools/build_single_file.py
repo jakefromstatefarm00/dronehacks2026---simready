@@ -196,12 +196,38 @@ def _runs_dir():
     return head + "from __future__ import annotations\n" + code
 
 
+def build_native_turns(altitude, prior, cps, commit):
+    """The native file with --turns on by default (speed-gated turning + exploratory look);
+    ``--turns off`` flies exactly what upload_to_flyx.py flies."""
+    text = build_native(altitude, prior, cps, commit)
+    text = replace(text, '''ap.add_argument("--turns", choices=["on", "off"], default="off",''',
+                   '''ap.add_argument("--turns", choices=["on", "off"], default="on",''', "fly_pathplan.py --turns")
+    text = replace(text, '"""UPLOAD THIS FILE TO FLYX: our online path planner flying PX4 natively (Offboard).\n',
+                   '"""UPLOAD THIS FILE TO FLYX: our online path planner flying PX4 natively (Offboard).\n\n'
+                   'TURNS BUILD: --turns on by default. Turns faster only when slow: heading-rate cap\n'
+                   '= min(0.50 rad/s moving slowly, 0.35 rad/s nearly stopped / in place, 0.10 / speed) in sim-time\n'
+                   'units, speed = max(measured, 0.95 x setpoint distance), so commanded yaw rate x speed never\n'
+                   'exceeds 0.10 rad m/s^2 (Gazebo VIO divergences: 0.13-0.22); no faster than 0.25 rad/s while the\n'
+                   'camera view on the planner map is < 1 m.  Options: --corner-view, --look-guard, --crawl-breaker\n'
+                   '(default off).  `--turns off` = upload_to_flyx.py of the same commit exactly.\n',
+                   "native head")
+    return text
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--altitude", type=float, default=.9)
+    ap.add_argument("--turns-out", type=Path, default=None,
+                    help="only write the turns build (native, --turns on by default) to this path")
     a = ap.parse_args()
     prior, cps = build_map(a.altitude)
     commit = git_commit()
+    if a.turns_out is not None:
+        text = build_native_turns(a.altitude, prior, cps, commit)
+        compile(text, str(a.turns_out), "exec")
+        a.turns_out.write_text(text, encoding="utf-8", newline="\n")
+        print(f"wrote {a.turns_out} ({len(text) / 1024:.0f} KB), turns build, commit {commit}")
+        return
     for name, build in (("upload_to_flyx.py", build_native), ("pathplan_mission.py", build_skybeta)):
         path = ROOT / "flyx" / name
         text = build(a.altitude, prior, cps, commit)
