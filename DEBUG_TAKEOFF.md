@@ -130,6 +130,16 @@ Also from the QGC ULog of the only real launch (log_31, see `drone_logs/qgc_2026
 `EKF2_MAG_TYPE=0` lets the magnetometer yank heading 126 deg when EV drops; `CA_ROTOR*` geometry is
 front-heavy (nose-up at liftoff). Those matter once it flies; they do not cause today's `local_enu: null`.
 
+## Choosing the program from ssh, before arming (`jetson/fly`)
+
+```
+fly hard      hardcoded 0.9 m route            fly record   RC recording day (path_recorder, no autonomy)
+fly best      Jolie's planner v4c (FlyX 5/5)   fly status   what is configured / running / armed
+```
+Each refuses if armed, swaps the competitor window live (never shadow), saves the choice for the next
+boot (`drone.env` + `~/team_ws/.boot_program`, read by `jolie_best.launch.py`), then runs
+`preflight.sh --quick` and prints GO / NO-GO. Install: `ln -sf ~/team_ws/jetson/fly ~/bin/fly`.
+
 ## Boot program state
 
 * `/etc/skybeta/drone.env`: `COMPETITOR_PKG=jolie_best`, `COMPETITOR_LAUNCH=jolie_best.launch.py`.

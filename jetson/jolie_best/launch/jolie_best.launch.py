@@ -10,8 +10,9 @@ landed, disarmed), NOT at arming. Put the drone on the launch mark facing up the
 BEFORE powering the flight controller, and do not move it afterwards; if it was moved, restart the
 competitor window (or the stack) with the drone on the mark.
 
-    ros2 launch jolie_best jolie_best.launch.py                 # FLY: hardcoded route (the boot default)
-    ros2 launch jolie_best jolie_best.launch.py script:=upload_to_flyx_v4c_skybeta.py   # planner v4c
+    fly hard | fly best          # on the Jetson host (jetson/fly): pick the program, live, for now and for the next boot
+    ros2 launch jolie_best jolie_best.launch.py                 # boot: the saved choice, else the hardcoded route
+    ros2 launch jolie_best jolie_best.launch.py script:=upload_to_flyx_v4c_skybeta.py   # planner v4c explicitly
     ros2 launch jolie_best jolie_best.launch.py shadow:=true    # bench: plans + logs, no setpoints
 """
 import os
@@ -22,6 +23,11 @@ from launch.actions import DeclareLaunchArgument, ExecuteProcess, OpaqueFunction
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 
+PROGRAMS = ("upload_to_flyx_v4c_skybeta_hard.py",   # fixed 0.9 m route through the checkpoints (`fly hard`)
+            "upload_to_flyx_v4c_skybeta.py")        # Jolie's planner v4c, FlyX 5/5 (`fly best`)
+DEFAULT_PROGRAM = PROGRAMS[0]
+CHOICE_FILE = "/root/team_ws/.boot_program"         # written by jetson/fly on the host (~/team_ws/.boot_program)
+
 INTERFACE = {   # identical to the organizer's competitor example / dronehacks_pathplan pathplan.launch.py
     "max_altitude_m": 3.0, "min_altitude_m": 0.3, "max_speed_mps": 1.5, "setpoint_rate_hz": 10.0,
     "allow_mode_request": False, "auto_offboard_on_arm": True,
@@ -30,7 +36,14 @@ INTERFACE = {   # identical to the organizer's competitor example / dronehacks_p
 
 
 def _program(context):
-    script = os.path.join(get_package_share_directory("jolie_best"), LaunchConfiguration("script").perform(context))
+    name = LaunchConfiguration("script").perform(context).strip()
+    if not name:                                   # chosen with `fly hard|best` (jetson/fly); else the hard route
+        try:
+            name = open(CHOICE_FILE).read().strip()
+        except OSError:
+            name = ""
+        name = name if name in PROGRAMS else DEFAULT_PROGRAM
+    script = os.path.join(get_package_share_directory("jolie_best"), name)
     off = LaunchConfiguration("camera_offset").perform(context).split()
     cmd = ["python3", "-u", script, "--camera-offset", *off,
            "--depth-topic", LaunchConfiguration("depth_topic").perform(context)]
@@ -46,8 +59,9 @@ def _program(context):
 
 def generate_launch_description():
     return LaunchDescription([
-        DeclareLaunchArgument("script", default_value="upload_to_flyx_v4c_skybeta_hard.py",
-                              description="program file in the package share: the HARDCODED route (default, 2026-11-08) or upload_to_flyx_v4c_skybeta.py (planner v4c)"),
+        DeclareLaunchArgument("script", default_value="",
+                              description="program file in the package share; empty = the choice saved by `fly hard|best` "
+                                          f"in {CHOICE_FILE}, else {DEFAULT_PROGRAM}. Options: {', '.join(PROGRAMS)}"),
         DeclareLaunchArgument("shadow", default_value="false", description="true: plan and log only"),
         DeclareLaunchArgument("depth_topic", default_value="/camera/depth/image_raw"),
         DeclareLaunchArgument("camera_offset", default_value="0.1053 0 0.0304",
