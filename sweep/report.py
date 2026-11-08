@@ -39,9 +39,9 @@ def final_table(summary, names):
 
 def failmap_table(summary, config="base"):
     import failmap
-    lines = ["| perturbation (on L0) | n | completion % | clean % | time mean s | p5 clear m | crashes | early lands | "
+    lines = ["| perturbation (on C0) | n | completion % | clean % | time mean s | p5 clear m | crashes | early lands | "
              "timeouts | VIO events | fails after cp (k:n) | failure reasons |", "|" + "---|" * 12]
-    order = ["L0", "L0@rtf1.0"] + [ax["name"] for ax in failmap.AXES]
+    order = ["C0"] + [ax["name"] for ax in failmap.AXES]
     for lv in order:
         m = summary.get((config, lv))
         if not m:
