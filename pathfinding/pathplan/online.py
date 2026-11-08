@@ -113,6 +113,11 @@ class OnlinePlanner:
         self._near_miss = False
         self.map_resets = 0
         self._trail, self._backing = [], 0
+        # [v5] switches, all off here (= v4c); planner_process turns them on (V5_OPTIONS)
+        self.look_max_rad = 2 * np.pi              # [v5 look_guard] look-around extent (v4c: a full turn)
+        self.look_sign_fn = None                   # [v5 look_guard] (planner) -> +-1 / None: which way to look
+        self.plan_cache = False                    # [v5 plan_cache] skip a search that already failed on the same inputs
+        self._map_version, self._failed_key = 0, None
         self.observations = 0                      # depth frames integrated
         self.status = "active"                     # active | done | failed
         self.index = 0
@@ -129,6 +134,7 @@ class OnlinePlanner:
         changed = self.belief.integrate(free, hit, behind)
         if changed is None:
             return
+        self._map_version += 1                                 # [v5 plan_cache] the cost grid changed
         self.router.map_changed(changed, self.belief.cost)      # D* must see every change
         if not self.dirty and _near_path(self.spec.to_xy(changed), self.poly, self._near):
             self.dirty = True
@@ -244,16 +250,27 @@ class OnlinePlanner:
         if self.dirty or self.poly is None or len(self.poly) < 2:
             self.since_plan, self.dirty = 0.0, False
             t = time.perf_counter()
-            cost, relaxed = self._fenced(cost, here), self._fenced(relaxed, here)
-            cells, ex = self.router.plan(cost, here, self.goal)
-            if cells:
-                self.optimistic = False
-            elif self.optimistic:                        # fallback search on the relaxed map
-                self.router.reset()
-                cells, _, ex = theta_star(relaxed, here, self.goal)
-            self.plan_times.append(time.perf_counter() - t)
-            self.stats["expansions"] += ex
-            self.stats["plan_calls"] += 1
+            # [v5 plan_cache] a failed search is exhaustive (it expands every reachable cell: ~185 ms
+            # per look-around step in FlyX run 11, on a CPU-starved lab). On the same start cell, goal,
+            # checkpoint and cost grid it fails again, so do not repeat it. Not used while doubting the
+            # map (the optimistic cost also depends on which walls are confirmed).
+            key = (here, self.goal, self.index, self._map_version)
+            if self.plan_cache and not self.optimistic and key == self._failed_key:
+                cells, ex = [], 0
+                self.stats["cached_failures"] = self.stats.get("cached_failures", 0) + 1
+            else:
+                cost, relaxed = self._fenced(cost, here), self._fenced(relaxed, here)
+                cells, ex = self.router.plan(cost, here, self.goal)
+                if cells:
+                    self.optimistic = False
+                elif self.optimistic:                        # fallback search on the relaxed map
+                    self.router.reset()
+                    cells, _, ex = theta_star(relaxed, here, self.goal)
+                elif self.plan_cache:
+                    self._failed_key = key
+                self.plan_times.append(time.perf_counter() - t)
+                self.stats["expansions"] += ex
+                self.stats["plan_calls"] += 1
             if not cells:
                 return self._stuck("no path")
             self.looked, self._look_prev, self._look_calls, self._look_target = 0.0, None, 0, None
@@ -292,6 +309,7 @@ class OnlinePlanner:
             self._event("forget depth map")
             self.events[-1]["why"] = why
             self.belief = BeliefMap(self.prior, self.spec, self.env, self.cfg.suspect_penalty)
+            self._map_version += 1
             self.router.reset()
             self.optimistic, self.dirty = False, True
             self.looked, self._look_prev, self._look_calls, self._look_target, self._look_dir = 0.0, None, 0, None, None
@@ -309,7 +327,7 @@ class OnlinePlanner:
         if self._look_prev is not None:
             self.looked += abs(_wrap(self.yaw - self._look_prev))
         self._look_prev, self._look_calls = self.yaw, self._look_calls + 1
-        if self.looked < 2 * np.pi and self._look_calls <= 200:      # cap: in case it cannot turn
+        if self.looked < self.look_max_rad and self._look_calls <= 200:      # cap: in case it cannot turn
             if self._look_calls == 1:
                 self._event("look around")
                 self.events[-1]["why"] = why
@@ -337,6 +355,9 @@ class OnlinePlanner:
         """Turn toward where the PUBLISHED route goes first. The straight-line bearing to the next
         checkpoint (used before) is often the wrong side in a maze: the real sim kept looking left
         while the course turns right. Falls back to that bearing if the published map has no route."""
+        if getattr(self, "_look_dir", None) is None and self.look_sign_fn is not None:
+            sign = self.look_sign_fn(self)                     # [v5 look_guard] toward the long view
+            self._look_dir = None if sign is None else (1.0 if sign > 0 else -1.0)
         if getattr(self, "_look_dir", None) is None:
             goal = self.spec.to_xy(np.array(self.goal)) if self.goal is not None else self.checkpoint.centre
             towards = goal
