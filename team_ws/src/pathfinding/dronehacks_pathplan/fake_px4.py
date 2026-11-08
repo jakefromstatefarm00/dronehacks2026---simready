@@ -12,8 +12,9 @@ carry) and cuVSLAM. It publishes
 
 and obeys /fmu/in/offboard_control_mode + trajectory_setpoint + vehicle_command like PX4:
 Altitude/Position/Offboard mode switches (Offboard only with a live heartbeat), arming on the
-ground, Land, Offboard loss -> Position, auto-disarm 2 s after landing and 10 s after arming
-without taking off. The vehicle is a point with PX4-like position tracking (P gain, 1 m/s,
+ground, Land, Offboard loss -> PX4 v1.16's failsafe Hold (AUTO_LOITER) for up to COM_FAIL_ACT_T
+(5 s), back to Offboard if the heartbeat returns, else Position (COM_OBL_RC_ACT 0), auto-disarm
+2 s after landing and 10 s after arming without taking off. The vehicle is a point with PX4-like position tracking (P gain, 1 m/s,
 lag, 0.8 rad/s yaw). Not a flight model: it checks wiring, frames and the handshake.
 """
 from __future__ import annotations
@@ -30,7 +31,8 @@ from rclpy.qos import (QoSDurabilityPolicy, QoSHistoryPolicy, QoSProfile, QoSRel
                        qos_profile_sensor_data)
 from nav_msgs.msg import Odometry
 
-ALTCTL, POSCTL, OFFBOARD, AUTO_LAND = 1, 2, 14, 18
+ALTCTL, POSCTL, AUTO_LOITER, OFFBOARD, AUTO_LAND = 1, 2, 4, 14, 18
+COM_OF_LOSS_T, COM_FAIL_ACT_T = .5, 5.0     # fake's heartbeat timeout; PX4's failsafe Hold delay
 DISARMED, ARMED = 1, 2
 
 
@@ -48,6 +50,7 @@ class FakePX4(Node):
         self.pos, self.vel, self.yaw = np.zeros(3), np.zeros(3), 0.0      # ENU odom, facing +x
         self.arming, self.nav, self.landed = DISARMED, ALTCTL, True
         self.sp, self.last_heartbeat, self.armed_at, self.landed_since = None, -1e9, None, None
+        self.failsafe_since = None              # in the failsafe Hold since (wants Offboard back)
         self.log = {'commands': [], 'modes': [], 'max_alt': 0.0, 'path': []}
         out_qos = QoSProfile(reliability=QoSReliabilityPolicy.BEST_EFFORT,
                              durability=QoSDurabilityPolicy.TRANSIENT_LOCAL,
@@ -107,6 +110,8 @@ class FakePX4(Node):
             self.set_nav(AUTO_LAND)
 
     def set_nav(self, nav):
+        if nav != AUTO_LOITER:
+            self.failsafe_since = None          # any other mode ends the failsafe Hold
         if nav != self.nav:
             self.log['modes'].append({'t': round(time.monotonic(), 2), 'from': self.nav, 'to': nav})
             self.get_logger().info(f'nav_state {self.nav} -> {nav}')
@@ -115,8 +120,17 @@ class FakePX4(Node):
     # ------------------------------------------------------------------ the vehicle
     def step(self):
         now, dt = time.monotonic(), self.dt
-        if self.nav == OFFBOARD and now - self.last_heartbeat > .5:
-            self.set_nav(POSCTL)                                     # COM_OBL_RC_ACT: Position
+        # PX4 v1.16 failsafe framework (commander/failsafe/framework.cpp): a lost Offboard stream
+        # first holds (AUTO_LOITER) for COM_FAIL_ACT_T and returns to the user's Offboard if the
+        # stream comes back; only then the COM_OBL_RC_ACT action (0: Position).
+        if self.nav == OFFBOARD and now - self.last_heartbeat > COM_OF_LOSS_T:
+            self.set_nav(AUTO_LOITER)
+            self.failsafe_since = now
+        elif self.nav == AUTO_LOITER and self.failsafe_since is not None:
+            if now - self.last_heartbeat <= COM_OF_LOSS_T:
+                self.set_nav(OFFBOARD)
+            elif now - self.failsafe_since > COM_FAIL_ACT_T:
+                self.set_nav(POSCTL)
         target_v = np.zeros(3)
         if self.arming == ARMED and self.nav == OFFBOARD and self.sp is not None:
             target_v = .95 * (self.sp[0] - self.pos)
