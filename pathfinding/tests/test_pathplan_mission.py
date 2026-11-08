@@ -202,13 +202,14 @@ def test_near_miss_keeps_flying_and_a_real_slip_still_escapes():
     drone next to maze wall M1 and lost VIO in FlyX runs 6 and 9). Really close: back out."""
     from pathplan.online import OnlinePlanner, PlannerConfig
     occ = box(arena(), .5, 1.5, -1.5, 1.5)                  # wall face at x = 0.5 (ENV: radius .15, keep-out .20)
-    for x, expect in ((.5 - .19, ""), (.5 - .16, "escape")):  # 0.19 m: near miss; 0.16 m: < radius + 3 cm
+    for x, expect in ((.5 - .19, "near miss"), (.5 - .16, "escape")):  # 0.19 m: near miss; 0.16 m: < radius + 3 cm
         p = OnlinePlanner(occ, SPEC, ENV, GOAL, PlannerConfig(lookahead_m=0))
         p.update(np.array([0.0, -1.1]), np.pi / 2)            # plan from a free spot first
         cmd = p.update(np.array([x, -.4]), np.pi / 2)
         assert cmd.mode == "move" and cmd.reason == expect, (x, cmd.reason, p.events[-2:])
-        if not expect:
+        if expect == "near miss":
             assert any(e["event"] == "keep-out near miss" for e in p.events)
+            assert cmd.path[1][0] < x - .005                  # first step leads OUT of the keep-out (away from x = 0.5)
 
 
 def test_phantom_wall_is_forgotten_instead_of_landing():

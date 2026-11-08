@@ -130,7 +130,9 @@ def planner_process(conn, build_planner):
             planner.observe(free, hit, behind)
         cmd = planner.update(xy, yaw)
         if cmd.mode == "move" and cmd.path is not None and len(cmd.path) >= 2:
-            cmd.path = safe_carrot_path(planner.belief.cost, spec, np.asarray(xy, float), cmd.path, carrot_m)
+            # half-length step while stepping out of the keep-out after a near miss
+            step = carrot_m * (.5 if cmd.reason == "near miss" else 1.0)
+            cmd.path = safe_carrot_path(planner.belief.cost, spec, np.asarray(xy, float), cmd.path, step)
         conn.send((cmd, planner.events, planner.cleared, 1e3 * (time.perf_counter() - t0), quality))
 
 
