@@ -1,0 +1,15 @@
+| level | arm | runs | completion | time mean / p90 (s) | min clearance min / p5 (m) | time < 0.30 m (s) | contacts | VIO risk (exp. events) | VIO events |
+|---|---|---|---|---|---|---|---|---|---|
+| L0 | proven base | 32 | 100 % | 96.6 / 100.3 | 0.337 / 0.342 | 0.0 | 0 | 0.136 | 0 |
+| L0 | proven base + residual | 32 | 100 % | 79.7 / 82.9 | 0.384 / 0.388 | 0.0 | 0 | 0.244 | 0 |
+| L1 | proven base | 32 | 100 % | 96.2 / 100.1 | 0.316 / 0.324 | 0.0 | 0 | 0.138 | 0 |
+| L1 | proven base + residual | 32 | 100 % | 79.6 / 83.7 | 0.310 / 0.328 | 0.0 | 0 | 0.240 | 0 |
+
+- **L0**: published course, nominal dynamics
+- **L1**: maze/chicane walls shifted up to 8 cm
+
+**proven residual vs proven base: accepted = True**
+- L0: not worse = True, faster = True, wider p5 clearance = True
+- L1: not worse = True, faster = True, wider p5 clearance = False
+
+seeds 1000-1031, 128 episodes, 608 s wall

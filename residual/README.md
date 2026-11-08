@@ -244,3 +244,58 @@ Raw rows: `results/episodes.jsonl`; training logs: `results/train_log_*.jsonl`.
 
 seeds 1000-1015, 640 episodes, 1121 s wall
 
+
+
+## Round 2 (retrain on the losing conditions): candidate rejected, current files kept
+
+`python -m residual.train_mix --init residual/policy.json --minutes 75 --workers 10`:
+- **Start:** from the round-1 policy.
+- **Training conditions:** a fixed mix of L0 10 %, L1 10 %, L2 20 %, C0 20 %, C1 20 %, D1 20 %.
+- **Fitness v2:** any contact is a fixed -300, which outweighs the whole time reward (<= 90). Yaw-rate x speed above 0.10 rad m/s^2 (the calibrated VIO trigger) costs 100 per unit-second.
+- **Gates:** 32 held-out seeds (2000-2031) per cell on L2/C0/C1/D1, with a snapshot saved at each gate.
+
+The laptop CPU was shared with other agents, so a 128-episode gate took 15-35 min. Only 10 ES iterations ran in the ~2 h budget.
+
+`results/round2_table.md` (95 % Wilson intervals). L0/L1 use seeds 1000-1031; the other cells use gate seeds 2000-2031. Base, round 1 and round 2 fly the same seeds in each cell:
+
+| cell | arm | completion [95 % Wilson] | contacts / 32 [rate CI] | NAVIGATE s (completed) | p5 min clearance m |
+|---|---|---|---|---|---|
+| L0 | base | 100 % [89, 100] | 0 | 96.6 +/- 1.0 | 0.342 | corner yaw-rate x speed 0.074 |
+| L0 | round 1 (current) | 100 % [89, 100] | 0 | 79.7 +/- 1.0 | 0.388 | corner yaw-rate x speed 0.094 |
+| L1 | base | 100 % [89, 100] | 0 | 96.2 +/- 1.1 | 0.324 | corner yaw-rate x speed 0.074 |
+| L1 | round 1 (current) | 100 % [89, 100] | 0 | 79.6 +/- 1.2 | 0.328 | corner yaw-rate x speed 0.093 |
+| L2 | base | 78 % [61, 89] | 7 [11-39 %] | 99.3 | 0.279 |
+| L2 | round 1 (current) | 78 % [61, 89] | 7 [11-39 %] | 79.9 | 0.279 |
+| L2 | round 2 (it 8) | 78 % [61, 89] | 7 [11-39 %] | 81.7 | 0.279 |
+| C0 | base | 25 % [13, 42] | 21 [48-80 %] | 72.0 | 0.271 |
+| C0 | round 1 (current) | 19 % [9, 35] | 22 [51-82 %] | 65.0 | 0.275 |
+| C0 | round 2 (it 8) | 16 % [7, 32] | 24 [58-87 %] | 70.3 | 0.275 |
+| C1 | base | 9 % [3, 24] | 26 [65-91 %] | 69.9 | 0.274 |
+| C1 | round 1 (current) | 16 % [7, 32] | 23 [55-84 %] | 64.8 | 0.274 |
+| C1 | round 2 (it 8) | 16 % [7, 32] | 24 [58-87 %] | 70.7 | 0.274 |
+| D1 | base | 9 % [3, 24] | 27 [68-93 %] | 101.8 | 0.275 |
+| D1 | round 1 (current) | 6 % [2, 20] | 25 [61-89 %] | 81.6 | 0.275 |
+| D1 | round 2 (it 8) | 9 % [3, 24] | 24 [58-87 %] | 95.1 | 0.277 |
+
+
+Coordinator's rebuild rule: "no worse than current on L0-L2 and better on C0/C1/D1". Round 2 equals round 1 on L2, is worse on C0 (16 % vs 19 %, 24 vs 22 contacts) and C1 (24 vs 23 contacts), and is better only on D1. So the rule is **not met**, and the flight files keep the round-1 policy. Round 2 is also slower (L2 81.7 vs 79.9 s, C0 70.3 vs 65.0 s, D1 95.1 vs 81.6 s), which is the expected effect of the yaw x speed penalty.
+
+Every difference between the residual arms on C0/C1/D1 is 1-3 runs out of 32, well inside the intervals. On calibrated dynamics and drift the residual neither clearly helps nor clearly hurts, because the base itself completes only 9-25 %. Those contacts come from estimator drift and lag that a +-0.08 m / x[0.6, 1.3] carrot nudge cannot remove.
+
+### Gazebo real-PX4 flights of the round-1 file (GB10 v500-v507), `results/gazebo_table.md`
+
+`python -m residual.score_gazebo <artifacts> v200-v214 v301 v500-v507`. The scorer reads Gazebo truth, the journal and the program log. origin/gazebo-jolie's `score_run.py` was not available.
+
+| | base v200-v214 | residual v500-v507 |
+|---|---|---|
+| completed | 14 / 15 (v209: VIO divergence 12.8 s into NAVIGATE) | **0 / 8** |
+| NAVIGATE (sim s, completed) | 65.8 mean | - |
+| failed in TAKEOFF, before the residual acted (0 planning steps) | - | 3 (v502, v503, v505) |
+| corner yaw-rate x speed peak, before divergence | 0.105-0.127 (v209: 0.130) | v501 0.149, v504 0.219 |
+
+The batch is **confounded by the host**:
+- **The residual can't explain the takeoff failures.** The residual flights ran 2.5 h after the base batch, while GB10 had load average 20-28 on 20 cores, with other agents' simulations running. Three of eight failed in TAKEOFF, where the residual is inactive, and their takeoffs ended "near altitude after 10 s (0.23-0.25 m off)", i.e. the estimator was already wrong.
+- **A concurrent control failed the same way.** v301, another agent's flight without the residual in the same window, also failed: 0.25 m off, 1/5.
+- **The corner signal is real, though.** In the two flights where the residual reached the first corner (v501, v504), yaw-rate x speed peaked at 0.149 and 0.219, above every base flight. The sim shows the same direction (L0 corner peak 0.074 base vs 0.094 residual, 32 seeds).
+
+**Needed before trusting either verdict:** re-fly interleaved pairs on a quiet host, e.g. `upload_to_flyx_residual.py` and `upload_to_flyx_residual.py --no-residual` alternating in one queue.

@@ -54,7 +54,11 @@ def main(argv=None):
     ap.add_argument("--seeds", default="1000-1031")
     ap.add_argument("--workers", type=int, default=10)
     ap.add_argument("--out", type=Path, default=REPO / "residual" / "results")
+    ap.add_argument("--levels", nargs="+", default=LEVELS)
     a = ap.parse_args(argv)
+    LEVELS[:] = a.levels
+    KEEP[:] = [lv for lv in KEEP if lv in LEVELS]
+    BETTER[:] = [lv for lv in BETTER if lv in LEVELS]
     seeds = evaluate.parse_seeds(a.seeds)
     pol = {"base": None, "round1": json.loads(a.current.read_text()), "round2": json.loads(a.candidate.read_text())}
     tasks, labels = [], []
@@ -68,7 +72,7 @@ def main(argv=None):
     for r, arm in zip(rows, labels):
         r["arm"] = arm
     a.out.mkdir(parents=True, exist_ok=True)
-    with open(a.out / "round2_episodes.jsonl", "w") as fh:
+    with open(a.out / ("round2_episodes_" + "_".join(LEVELS) + ".jsonl"), "w") as fh:
         for r in rows:
             fh.write(json.dumps(r, default=float) + "\n")
     tb = table(rows, list(pol))
@@ -89,8 +93,8 @@ def main(argv=None):
         return (bx["completion"] > by["completion"] or bx["contacts"] < by["contacts"]) and not_worse(x, y, lv)
 
     keep_ok = all(not_worse("round2", "round1", lv) for lv in KEEP)
-    better_ok = all(not_worse("round2", "round1", lv) for lv in BETTER) and any(better("round2", "round1", lv) for lv in BETTER)
-    adopt = keep_ok and better_ok
+    better_ok = (all(not_worse("round2", "round1", lv) for lv in BETTER) and any(better("round2", "round1", lv) for lv in BETTER))         if BETTER else None
+    adopt = keep_ok and bool(better_ok)
     lines += ["", f"- round 2 no worse than round 1 on L0-L2: **{keep_ok}**",
               f"- round 2 better than round 1 on C0/C1/D1 (no worse on all, better on at least one): **{better_ok}**",
               f"- **rebuild with round 2: {adopt}**", ""]
@@ -101,7 +105,7 @@ def main(argv=None):
         lines.append(f"- {arm} vs base: not worse at {[lv for lv in LEVELS if nw[lv]]}, worse at "
                      f"{[lv for lv in LEVELS if not nw[lv]]}; accepted (rule) on these levels: {all(nw.values()) and any(gain.values())}")
     md = "\n".join(lines) + "\n"
-    (a.out / "round2.md").write_text(md)
+    (a.out / ("round2_" + "_".join(LEVELS) + ".md")).write_text(md)
     print(md)
     print("ADOPT" if adopt else "KEEP")
 
