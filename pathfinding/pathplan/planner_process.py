@@ -39,9 +39,14 @@ def safe_carrot_path(cost, spec, xy, path, carrot_m):
     from .grid_search import line_cost
     from .online import _point_along
     cell = lambda p: np.clip((np.asarray(p)[::-1] + spec.half_size) / spec.resolution - .5, 0, cost.shape[0] - 1)
+    # Check the straight line from the drone - or, if the drone itself is inside the keep-out (a near
+    # miss), from the route's first point: from a blocked start every line reads as blocked, the carrot
+    # shrank to 0.1 m and the drone crawled along the keep-out edge, grazing the wall (fake-PX4 clutter-01).
+    rc = np.rint(cell(xy)).astype(int)
+    start = xy if np.isfinite(cost[rc[0], rc[1]]) or len(path) < 2 else np.asarray(path[1], float)
     for d in (carrot_m, .35, .25, .15):
         target = _point_along(path, d)
-        if np.isfinite(line_cost(cost, cell(xy), [cell(target)])[0]):
+        if np.isfinite(line_cost(cost, cell(start), [cell(target)])[0]):
             return np.array([xy, target])
     return np.array([xy, _point_along(path, .1)])
 
