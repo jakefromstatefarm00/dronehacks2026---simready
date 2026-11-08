@@ -1,0 +1,22 @@
+=== serial_ab start 2026-11-08 21:15:30 plan=jolie_flyx/serial_ab_plan.txt load=2.04 2.07 2.07
+21:15:30 load=2.04 2.07 2.07 launching v600: 600 jolie_flyx/upload_to_flyx_residual.py --no-residual
+21:18:54 load=4.92 3.83 2.78 v600 finished wall=204s hung=0
+21:18:54 load=4.92 3.83 2.78 launching v601: 601 jolie_flyx/upload_to_flyx_residual.py
+21:22:12 load=4.52 4.51 3.27 v601 finished wall=198s hung=0
+21:22:12 load=4.52 4.51 3.27 launching v602: 602 jolie_flyx/upload_to_flyx_residual.py --no-residual
+21:25:31 load=4.93 5.08 3.75 v602 finished wall=199s hung=0
+21:25:31 load=4.93 5.08 3.75 launching v603: 603 jolie_flyx/upload_to_flyx_residual.py
+21:31:04 load=3.71 4.90 4.15 v603 finished wall=333s hung=0
+21:31:04 load=3.71 4.90 4.15 launching v604: 604 jolie_flyx/upload_to_flyx_residual.py --no-residual
+21:34:23 load=3.97 4.73 4.24 v604 finished wall=199s hung=0
+21:34:23 load=3.97 4.73 4.24 launching v605: 605 jolie_flyx/upload_to_flyx_residual.py
+21:37:46 load=4.39 4.75 4.34 v605 finished wall=203s hung=0
+21:37:46 load=4.39 4.75 4.34 launching v606: 606 jolie_flyx/upload_to_flyx_residual.py --no-residual
+21:41:05 load=4.34 5.00 4.56 v606 finished wall=199s hung=0
+21:41:05 load=4.34 5.00 4.56 launching v607: 607 jolie_flyx/upload_to_flyx_residual.py
+21:44:43 load=4.31 4.84 4.60 v607 finished wall=218s hung=0
+21:44:43 load=4.31 4.84 4.60 launching v608: 608 jolie_flyx/upload_to_flyx_residual.py --no-residual
+21:48:17 load=3.89 4.51 4.52 v608 finished wall=214s hung=0
+21:48:17 load=3.89 4.51 4.52 launching v609: 609 jolie_flyx/upload_to_flyx_residual.py
+21:51:50 load=3.79 4.44 4.51 v609 finished wall=213s hung=0
+=== serial_ab DONE 2026-11-08 21:51:50

@@ -1,0 +1,34 @@
+[INFO] [1794172597.434358048] [flyx_pathplan]: flyx_pathplan up: EXECUTE; journal /home/suraj/dronehacks-2026-gb10/artifacts/gb10-sky-beta-course-v600/journal
+[INFO] [1794172597.441897089] [flyx_pathplan]: state None -> WAIT_HEALTH waiting for fresh pose, valid estimator, landed + disarmed
+[INFO] [1794172597.480825628] [flyx_pathplan]: odom: /fmu/out/vehicle_odometry
+[INFO] [1794172597.482022882] [flyx_pathplan]: status: /fmu/out/vehicle_status_v1
+[INFO] [1794172597.483072166] [flyx_pathplan]: land: /fmu/out/vehicle_land_detected
+[INFO] [1794172597.484193403] [flyx_pathplan]: local: /fmu/out/vehicle_local_position
+[INFO] [1794172597.485396977] [flyx_pathplan]: failsafe_flags: /fmu/out/failsafe_flags
+[INFO] [1794172600.592116320] [flyx_pathplan]: state WAIT_HEALTH -> STREAM streaming hold setpoints
+[INFO] [1794172601.591907975] [flyx_pathplan]: state STREAM -> WAIT_OFFBOARD requesting Offboard
+[INFO] [1794172601.641598546] [flyx_pathplan]: state WAIT_OFFBOARD -> WAIT_ARM Offboard active, requesting arm
+[INFO] [1794172601.691732079] [flyx_pathplan]: state WAIT_ARM -> TAKEOFF takeoff
+[INFO] [1794172611.691887089] [flyx_pathplan]: state TAKEOFF -> NAVIGATE near altitude after 10 s (0.11 m off)
+[INFO] [1794172697.541938742] [flyx_pathplan]: state NAVIGATE -> LAND landing pad reached (0.08 m from its centre)
+[INFO] [1794172703.591868470] [flyx_pathplan]: state LAND -> DONE landed and disarmed
+residual: OFF (--no-residual)
+
+========================================================================
+RESULT: DONE - landed and disarmed
+checkpoints cleared: 1 first corridor, 2 maze exit (Gate A), 3 tunnel, 4 chicane (window or Gate B), 5 landing pad  (5/5)
+states: READY -> STREAM -> WAIT_OFFBOARD -> WAIT_ARM -> TAKEOFF -> NAVIGATE -> LAND -> DONE
+PX4 mode changes (nav_state / failsafe / flags):
+  nav_state 4 (asked 4) failsafe=False 
+  nav_state 14 (asked 14) failsafe=False ['global_position_invalid', 'auto_mission_missing', 'home_position_invalid', 'manual_control_signal_lost']
+  nav_state 18 (asked 18) failsafe=False ['global_position_invalid', 'auto_mission_missing', 'home_position_invalid', 'manual_control_signal_lost']
+  nav_state 14 (asked 14) failsafe=False ['global_position_invalid', 'auto_mission_missing', 'offboard_control_signal_lost', 'home_position_invalid', 'manual_control_signal_lost']
+depth: no frames used (check --depth-topic / camera_info)
+planner events (last 5):
+  {'checkpoint': '2 maze exit (Gate A)', 'event': 'escape', 'at': [-1.973, 2.486]}
+  {'checkpoint': '2 maze exit (Gate A)', 'event': 'escape', 'at': [-1.959, 2.488]}
+  {'checkpoint': '2 maze exit (Gate A)', 'event': 'escape', 'at': [-1.946, 2.492]}
+  {'checkpoint': '2 maze exit (Gate A)', 'event': 'escape', 'at': [-1.936, 2.497]}
+  {'checkpoint': '2 maze exit (Gate A)', 'event': 'escape', 'at': [-1.928, 2.502]}
+journal: /home/suraj/dronehacks-2026-gb10/artifacts/gb10-sky-beta-course-v600/journal/journal.jsonl
+========================================================================
