@@ -128,6 +128,9 @@ yaw. It also puts the nose up to about 60 deg off the motion direction for short
 - The feeder then queued only at load below 18 and logged the load every 30 s. Valid flights ran
   at mean load 12-19.5 (the baseline v200-v214 ran at about 14).
 - v304 was also the earlier view build, before the "never swing back" rule was added.
+- Every valid view flight ran the committed view file. The slow flights ran the build of commit
+  89e9b35. It differs from the committed slow file only in shared helper lines that run under
+  `CORNER_VIEW` or set unused attributes, so its behaviour is identical.
 - **Three base flights never left the ground** (v309, v318, v324). The estimator was invalid or
   the takeoff timed out, with truth z unchanged. All code before NAVIGATE is identical in the
   three files, so these are rig start-up failures. They are excluded and were re-flown. That all
