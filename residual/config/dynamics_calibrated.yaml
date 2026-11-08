@@ -1,0 +1,26 @@
+# COPY of team_ws/src/team_mission/config/dynamics_calibrated.yaml, branch dynamics-calib (4964e62), relayed by the coordinator.
+# Used by the residual C levels. Do not edit here.
+# Dynamics ranges calibrated against PX4 v1.16 SITL (Gazebo, OpenVINS vision, Sky Beta class)
+# runs: v123, v128, v129, v131, v132, v133, v134, v135, v136, v137, v138, v139, v140, v141, v142; hold-out v139 (Jolie planner, pure 0.5 m carrots).
+# Fitted by dynamics_calib/fit_calib.py, written by dynamics_calib/make_yaml.py; see dynamics_calib/README.md.
+# Same schema as dynamics_default.yaml. Each line: [low, high]  # status: evidence.
+# NOT modelled by dynamics.py (handle in the env / evaluation): FlyX control stalls up to 1.95 s,
+# odometry pauses 0.3-1.4 s, VIO loss after fast yaw (see README), and the lab flying the same
+# planner ~2x slower in sim time than Gazebo did.
+kp_xy: [0.8, 1.25]              # measured: PX4 vsp/err regression 0.952 (= MPC_XY_P 0.95); effective fit with free Kp 1.16; lab params unknown
+kp_z: [0.85, 1.15]              # measured: regression 1.002 (= MPC_Z_P 1.0)
+tau: [0.3713, 1.0477]           # measured: chain fit with Kp fixed, pooled 0.83 s, runs 0.45-0.97
+vel_i: [0.0, 0.9956]            # measured: pooled 0.66, runs 0.00-0.87 (trades off against tau)
+max_accel: [1.0, 3.0]           # guess: never binds: p99 true xy accel 0.66 m/s^2 (programs limit it); PX4 tilt 45 deg allows far more
+px4_max_speed: [1.0, 2.0]       # guess: MPC_XY_VEL_MAX 12 in SITL; never binds with <= 0.9 m carrots
+k_yaw: [2.6292, 5.4606]         # measured (1 run): v139: 4.04 1/s (MC_YAW_P 2.8); suraj_course runs send yawspeed ff, not usable
+max_yaw_rate: [0.6, 1.62]       # weak: v139 fit 1.41 rad/s; peak true yaw rate 1.14; commanded rates were capped by the programs
+yaw_tau: [0.0558, 0.1739]       # measured (1 run): v139: 0.109 s, yaw delay 0.075 s folded in
+delay_steps: [0, 6]             # measured + lab margin: Gazebo chain delay 0.000-0.150 s (absorbed by tau); +3 steps for cuVSLAM/odom latency and 0.8x RT
+pos_noise: [0.002, 0.02]        # guess (Gazebo far cleaner): EKF jitter in Gazebo 0.6 mm (raw OpenVINS 1.1 mm); real cuVSLAM is noisier
+vel_noise: [0.01, 0.06]         # guess: Gazebo EKF 0.7 mm/s; kept at the default range
+drift_per_sqrt_m: [0.0, 0.0541] # measured + 2x for cuVSLAM: OpenVINS->EKF 0.0109 m/sqrt(m) median, runs 0.0000-0.0270
+drift_rate: [0.0, 0.0247]       # measured (weak) + 2x: time term 0.0018 m/sqrt(s) median, max 0.0123
+yaw_drift_rate: [0.0, 0.01]     # measured + 3x: EKF yaw vs truth 0.0006 rad/sqrt(s) median, max 0.0017
+disturbance: [0.0, 0.25]        # guess: Gazebo has no wind; lab is a sim too (indoor); small push kept
+disturbance_tau: [0.5, 3.0]     # guess: default

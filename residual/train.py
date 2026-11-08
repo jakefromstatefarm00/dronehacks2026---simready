@@ -124,9 +124,12 @@ def main(argv=None):
         rows = evaluate.run_tasks(tasks, a.workers)
         fp = np.array([rows[2 * k]["fitness"] for k in range(a.pairs)])
         fm = np.array([rows[2 * k + 1]["fitness"] for k in range(a.pairs)])
+        bad = np.array([("error" in rows[2 * k]) or ("error" in rows[2 * k + 1]) for k in range(a.pairs)])
+        fp, fm, eps_ok = fp[~bad], fm[~bad], eps[~bad]      # a crashed worker (e.g. out of memory) is no signal
+        eps = eps_ok
         diff = fp - fm
         scale = np.std(np.r_[fp, fm]) + 1e-6
-        g = (diff[:, None] * eps).sum(0) / (2 * a.pairs * a.sigma) / scale
+        g = (diff[:, None] * eps).sum(0) / (2 * max(len(diff), 1) * a.sigma) / scale
         theta = theta + opt.step(g) - 1e-3 * a.lr * theta        # small weight decay toward the base
         rec = {"it": it, "level": names[li], "f_mean": float(np.r_[fp, fm].mean()),
                "complete": float(np.mean([r.get("complete", False) for r in rows])),
