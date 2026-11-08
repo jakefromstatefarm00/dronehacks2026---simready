@@ -26,3 +26,16 @@ a flight.
 - Without colcon, from the repo root: `bash flyx_skybeta/run.sh team`.
 
 **On the drone:** README section 5 (copy this folder to `~/team_ws/src/pathfinding`).
+
+## Review 2 fixes (2026-11-07)
+
+| Level | Result |
+|---|---|
+| `pytest -q tests` | 190 passed (155 + 35 new: `test_review_fixes.py`, `test_runtime.py`, `test_launch_config.py`) |
+| `dry_run` default / `--no-depth` / `--dropout 30 1` | PASS 5/5 each, pad 0.003 m, closest wall 0.375 m |
+| Reviewer scenarios (`review2/scen.py`) | 1: no FAULT on a 0.2 s px4_link drop; 2: AUTO_LOITER 1.5 s ridden out, back to NAVIGATE; 3: READY -> ARMED -> TAKEOFF; 5: LOW_HOLD 4.7 s after the descent began despite a 9 cm z offset; 6: LOW_HOLD at the 175 s run limit |
+| `selftest.launch.py` (WSL, Jazzy, colcon) | **3/3 PASS** (5/5, pad 0.07-0.08 m). In every run the fake PX4 entered its failsafe Hold (14 -> 4 -> 14) three times on > 0.5 s heartbeat gaps and the node rode them out (0.4 s in total); before fix 2 each of these ended the flight in TAKEN_OVER. |
+
+The fake PX4 now models PX4 v1.16's failsafe Hold (COM_FAIL_ACT_T 5 s) instead of dropping
+straight to Position, and flight_interface runs on the wall clock in simulators
+(`interface_use_sim_time:=false`); see the commit messages for the PX4 source evidence.
