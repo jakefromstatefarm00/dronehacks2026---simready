@@ -384,5 +384,6 @@ def test_carrot_shrinks_while_the_nose_turns():
     aligned = PlanCommand("move", np.array([[0.0, 0.0], [1.0, 0.0]]), 0.0)
     turning = PlanCommand("move", np.array([[0.0, 0.0], [1.0, 0.0]]), np.deg2rad(45))
     assert m._carrot_for(aligned, 0.0) == pytest.approx(.5)
-    assert m._carrot_for(turning, 0.0) == pytest.approx(.15)                  # 0.3 x 0.5 at >= 42 deg off
-    assert m._carrot_for(PlanCommand("move", aligned.path, np.deg2rad(20)), 0.0) == pytest.approx(.5 * (1 - 20 / 60))
+    assert m._carrot_for(turning, 0.0) == pytest.approx(.5 * (1 - 45 / 90))   # slows through a corner
+    assert m._carrot_for(PlanCommand("move", aligned.path, np.deg2rad(80)), 0.0) == pytest.approx(.15)  # floor 30 %
+    assert m._carrot_for(PlanCommand("move", aligned.path, np.deg2rad(20)), 0.0) == pytest.approx(.5 * (1 - 20 / 90))

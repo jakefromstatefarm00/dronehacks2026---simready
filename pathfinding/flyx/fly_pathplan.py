@@ -84,7 +84,9 @@ def print_summary(mission, planner, node, journal_path):
     q = planner.depth_quality or {}
     if q.get("hits"):
         lines.append(f"depth: {node.depth_stats['frames']} frames; {q['hits_on_published_walls'] / q['hits']:.0%} of "
-                     f"hits on published walls (low = wrong camera mount); new obstacles {q['hits_new_confirmed']}")
+                     f"hits on published walls (low = drift or wrong camera mount); new obstacles {q['hits_new_confirmed']}")
+        if q.get("drift_filter_frames"):
+            lines.append(f"drift-aware phantom filter on for {q['drift_filter_frames']} depth frames (pose had drifted)")
     elif node.depth_stats["frames"] == 0:
         lines.append("depth: no frames used (check --depth-topic / camera_info)")
     if planner.events:

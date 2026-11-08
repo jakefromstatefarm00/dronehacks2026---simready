@@ -158,4 +158,8 @@ def drop_misregistered(free, hit, behind, prior, near_wall):
     """
     def keep(cells, mask):
         return cells[~mask[cells[:, 0], cells[:, 1]]] if len(cells) else cells
-    return keep(free, prior), keep(hit, prior | near_wall), keep(behind, prior | near_wall)
+    # Hits ON a published wall are kept: they change nothing (the cell is already occupied) except
+    # marking that wall camera-*confirmed*. Dropping them too meant no published wall was ever
+    # confirmed, so "doubt unconfirmed map" made every wall passable - including ones the camera
+    # was looking at - and fake-PX4 runs flew into them (clutter-01, 0.0 m).
+    return keep(free, prior), keep(hit, near_wall), keep(behind, prior | near_wall)

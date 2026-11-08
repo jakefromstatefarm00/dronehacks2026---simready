@@ -100,7 +100,7 @@ class MissionConfig:
     # Visual odometry dies on fast turns: Suraj's flyx_course data had 30 of 40 VIO losses above
     # 0.35 rad/s, and 3/3 Gazebo completions at 0.25; our FlyX run 6 lost xy after turning in place.
     yaw_rate_max: float = .25              # rad/s cap on the commanded heading's rate of change
-    slow_turn_deg: float = 60.0            # carrot shrinks to 30 % as the heading error reaches this
+    slow_turn_deg: float = 90.0            # carrot shrinks to 30 % as the heading error reaches 70 % of this
 
 
 class Mission:

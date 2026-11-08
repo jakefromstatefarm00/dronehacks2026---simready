@@ -20,6 +20,8 @@ WALL_SNAP_M = .25       # depth returns this close to a published wall are that 
                         # stereo noise): FlyX run 6 lost the tight passage past maze wall M1 to them
 HIT_CONFIRM = 3         # vote threshold for a new obstacle cell: +2 per frame that hits it, -1 per
                         # frame, so it must be seen in 2 of ~3 frames (single noisy frames are ignored)
+WALL_SNAP_DRIFT_M = .45 # ... and this close while recent depth says the pose has drifted (below)
+DRIFT_ON_WALL = .85     # recent share of depth hits on published walls below which the pose has drifted
 SOLID_BEHIND_M = .20    # behind a newly seen (unmapped) obstacle face, this deep counts as solid
 MAX_TURN_RATE = .5      # rad/s: depth frames taken while turning faster are dropped (pose error)
 
@@ -29,7 +31,12 @@ MAX_TURN_RATE = .5      # rad/s: depth frames taken while turning faster are dro
 # and turn in place 21-26 times per fake-PX4 flight (49-58 % of NAVIGATE), and a full stop followed
 # by turning in place is what lost visual odometry in Suraj's Gazebo v131. His flyx_course keeps
 # moving through turns (nose 0.7 m ahead, <= 0.25 rad/s); the mission slows down while turning.
-TURN_IN_PLACE_DEG = 60.0
+TURN_IN_PLACE_DEG = 90.0
+# Was 60 with a 0.7 m look-ahead: in the real sim the drone still spent a lot of each sharp (~90 deg)
+# corner stopped, turning in place at 0.25 rad/s (6 s per 90 deg). The nose now starts turning 1.0 m
+# before a corner and the drone keeps moving - slowly, the carrot shrinks with the heading error -
+# through corners up to 90 deg. PX4 flies the corner sideways while the nose catches up.
+LOOKAHEAD_M = 1.0
 
 
 def safe_carrot_path(cost, spec, xy, path, carrot_m):
@@ -66,7 +73,11 @@ def planner_process(conn, build_planner):
     from .world import clearance
     planner, spec, env, prior = build_planner(planner_name, altitude)
     planner.cfg.turn_in_place_deg = TURN_IN_PLACE_DEG
-    near_wall = (clearance(prior, spec) < WALL_SNAP_M) & ~prior
+    planner.cfg.lookahead_m = LOOKAHEAD_M
+    wall_dist = clearance(prior, spec)
+    near_wall_normal = (wall_dist < WALL_SNAP_M) & ~prior
+    near_wall_drift = (wall_dist < WALL_SNAP_DRIFT_M) & ~prior
+    near_wall, on_wall_avg = near_wall_normal, 1.0
     mount = CameraMount(offset=tuple(camera_offset), pitch_down_deg=pitch_down_deg)
     votes = np.zeros(prior.shape, np.int8)
     quality = {"hits": 0, "hits_on_published_walls": 0, "hits_new_confirmed": 0, "hits_new_ignored": 0}
@@ -85,9 +96,17 @@ def planner_process(conn, build_planner):
                                   mount=mount, expected=prior)
             raw_hit = cells[1]
             if len(raw_hit):                           # diagnostic: a wrong camera mount shows up here
-                on_wall = (prior | near_wall)[raw_hit[:, 0], raw_hit[:, 1]]
+                on_wall = (prior | near_wall_normal)[raw_hit[:, 0], raw_hit[:, 1]]
                 quality["hits"] += len(raw_hit)
                 quality["hits_on_published_walls"] += int(on_wall.sum())
+                # Drift-aware phantom filter: when recent depth agrees poorly with the published walls
+                # the pose estimate has drifted, and wall returns land beside the walls as phantom
+                # obstacles (real sim run 10: 63 % on walls, phantoms inside the 0.68 m-wide tunnel ->
+                # "no path" -> turning in the tunnel mouth -> VIO lost -> crash). Widen what counts as
+                # "that wall" then. Never moves the pose (unlike the failed drift correction).
+                on_wall_avg = .9 * on_wall_avg + .1 * float(on_wall.mean())
+                near_wall = near_wall_drift if on_wall_avg < DRIFT_ON_WALL else near_wall_normal
+                quality["drift_filter_frames"] = quality.get("drift_filter_frames", 0) + int(on_wall_avg < DRIFT_ON_WALL)
             free, hit, behind = drop_misregistered(*cells, prior, near_wall)
             votes = np.maximum(votes - 1, 0).astype(np.int8)
             if len(hit):

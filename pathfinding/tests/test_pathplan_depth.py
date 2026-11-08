@@ -68,3 +68,16 @@ def test_decode_16uc1_and_32fc1():
     assert img[0, 0] == 1.5 and np.isnan(img[0, 1])
     with pytest.raises(ValueError):
         decode_depth_image(b"\x00" * 4, 2, 1, "rgb8")
+
+
+def test_hits_on_published_walls_confirm_them():
+    """Hits on a published wall must reach the planner (they confirm it); hits next to it are dropped.
+    When they were all dropped, "doubt unconfirmed map" made walls the camera saw passable."""
+    from pathplan.depth_projection import drop_misregistered
+    prior = np.zeros((10, 10), bool)
+    prior[:, 0] = True
+    near = np.zeros_like(prior)
+    near[:, 1] = True
+    hit = np.array([[3, 0], [4, 1], [5, 6]])            # on the wall, next to it, out in the open
+    free, kept, behind = drop_misregistered(np.empty((0, 2), int), hit, np.empty((0, 2), int), prior, near)
+    assert {tuple(c) for c in kept} == {(3, 0), (5, 6)}

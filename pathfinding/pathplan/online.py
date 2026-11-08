@@ -31,6 +31,7 @@ from .belief import BeliefMap
 from .grid_search import astar, theta_star
 
 MAX_MAP_RESETS = 2      # times per flight the planner may forget depth obstacles before giving up
+LOOK_CLEAR_M = .50      # look around (turn in place) only this far from anything; else back out first
 NEAR_MISS_M = .03       # inside the keep-out, this much beyond the drone's radius still counts as a near miss
 
 
@@ -102,6 +103,7 @@ class OnlinePlanner:
         self.checkpoints = list(checkpoints)
         self.prior = prior_occ
         self.belief = BeliefMap(prior_occ, spec, env, self.cfg.suspect_penalty)
+        self.prior_cost = self.belief.cost.copy()           # the published map's cost (look-around direction)
         self.router = Router(self.cfg.planner)
         self.sensing = self.cfg.planner != "static"
         self.cleared, self.events, self.plan_times = [], [], []
@@ -109,6 +111,7 @@ class OnlinePlanner:
         self.pos = self.yaw = None
         self._near_miss = False
         self.map_resets = 0
+        self._trail, self._backing = [], 0
         self.observations = 0                      # depth frames integrated
         self.status = "active"                     # active | done | failed
         self.index = 0
@@ -134,6 +137,8 @@ class OnlinePlanner:
         """New pose (course frame). Returns what to do next."""
         xy = np.asarray(xy, float)
         prev, self.pos, self.yaw = self.pos, xy, float(yaw)
+        if not self._trail or np.linalg.norm(xy - self._trail[-1]) >= .15:
+            self._trail = (self._trail + [xy.copy()])[-80:]             # where we have been (backing out)
         if prev is not None and self.status == "active":
             self.since_plan += float(np.linalg.norm(xy - prev))
             self.poly = _trim(self.poly, xy)
@@ -249,6 +254,7 @@ class OnlinePlanner:
                 return self._stuck("no path")
             self.looked, self._look_prev, self._look_calls, self._look_target = 0.0, None, 0, None
             self._look_dir = None
+            self._backing = 0
             # start at the true position; a one-cell plan (already in the goal cell) still
             # flies to the cell centre instead of stalling
             new_poly = np.vstack([self.pos, spec.to_xy(np.array(cells[1:] or cells[-1:]))])
@@ -267,10 +273,29 @@ class OnlinePlanner:
         return Command("move", self.poly, want)
 
     def _stuck(self, why):
-        """No route or no free goal cell: 1) look around once, sensing (a phantom obstacle from
-        a misplaced depth frame is cleared when it is seen again); 2) doubt unconfirmed published
-        walls; 3) give up.  "no goal cell" used to fail at once, which landed the drone offline
-        on phantoms that one more look would have cleared."""
+        """No route or no free goal cell: 1) forget depth obstacles (phantoms from misplaced or noisy
+        depth - by far the commonest cause in FlyX; no movement needed); 2) look around once, sensing
+        - but first back out to open space if near walls: turning in place next to a wall lost visual
+        odometry in the real sim (M1 channel; tunnel mouth, run 10); 3) doubt unconfirmed published
+        walls; 4) give up."""
+        if self.map_resets < MAX_MAP_RESETS and self._look_calls == 0 and not self._backing:
+            self.map_resets += 1
+            self._event("forget depth map")
+            self.events[-1]["why"] = why
+            self.belief = BeliefMap(self.prior, self.spec, self.env, self.cfg.suspect_penalty)
+            self.router.reset()
+            self.optimistic, self.dirty = False, True
+            self.looked, self._look_prev, self._look_calls, self._look_target, self._look_dir = 0.0, None, 0, None, None
+            return self._decide()
+        if self._look_calls == 0 and self._backing < 60 and self._wall_distance() < LOOK_CLEAR_M:
+            target = next((p for p in reversed(self._trail[:-1])
+                           if self._wall_distance(p) >= LOOK_CLEAR_M and np.linalg.norm(p - self.pos) > .1), None)
+            if target is not None:
+                if not self._backing:
+                    self._event("back out to look")
+                self._backing += 1
+                self.dirty = True
+                return Command("move", np.array([self.pos, target]), self.yaw, "back out to look")
         # count the heading change actually seen, not the calls: a real vehicle turns slower
         # than we ask (5 calls/s at 15 deg each would "finish" before PX4 had turned 90 deg)
         if self._look_prev is not None:
@@ -293,45 +318,43 @@ class OnlinePlanner:
                     self._look_target, self._look_mark = self._look_target + step, None
             return Command("turn", yaw=self._look_target, reason="look around")
         if not self.optimistic:
+            # 3) doubt published walls the camera has not confirmed (a wall that moved)
             self.optimistic, self.dirty = True, True
             self._event("doubt unconfirmed map")
-            return self._decide()
-        if self.map_resets < MAX_MAP_RESETS:
-            # 4) forget what depth added and retry on the published map: the published course always
-            # has a route, and a phantom wall (misplaced or noisy depth) sealing a passage is what made
-            # the planner give up -> land mid-course in fake-PX4 runs. Real obstacles come back as soon
-            # as the camera sees them again.
-            self.map_resets += 1
-            self._event("forget depth map")
-            self.events[-1]["why"] = why
-            self.belief = BeliefMap(self.prior, self.spec, self.env, self.cfg.suspect_penalty)
-            self.router.reset()
-            self.optimistic, self.dirty = False, True
-            self.looked, self._look_prev, self._look_calls, self._look_target, self._look_dir = 0.0, None, 0, None, None
             return self._decide()
         self._fail(why)
         return Command("failed", reason=why)
 
     def _look_sign(self):
-        """Turn toward the goal's side first (it used to always turn left; in FlyX run 6 that
-        swung the camera onto a nearby wall instead of the open side toward the route)."""
+        """Turn toward where the PUBLISHED route goes first. The straight-line bearing to the next
+        checkpoint (used before) is often the wrong side in a maze: the real sim kept looking left
+        while the course turns right. Falls back to that bearing if the published map has no route."""
         if getattr(self, "_look_dir", None) is None:
             goal = self.spec.to_xy(np.array(self.goal)) if self.goal is not None else self.checkpoint.centre
-            off = _wrap(atan2(goal[1] - self.pos[1], goal[0] - self.pos[0]) - self.yaw)
+            towards = goal
+            here = tuple(int(v) for v in self.spec.to_cell(self.pos))
+            goal_rc = tuple(int(v) for v in self.spec.to_cell(goal))
+            if np.isfinite(self.prior_cost[here]) and np.isfinite(self.prior_cost[goal_rc]):
+                cells, _, _ = theta_star(self.prior_cost, here, goal_rc)
+                if len(cells) >= 2:
+                    towards = _point_along(np.vstack([self.pos, self.spec.to_xy(np.array(cells[1:]))]), .7)
+            off = _wrap(atan2(towards[1] - self.pos[1], towards[0] - self.pos[0]) - self.yaw)
             self._look_dir = -1.0 if off < 0 else 1.0
         return self._look_dir
 
-    def _wall_distance(self, window=.6):
-        """Distance (m) from the drone to the nearest believed-occupied cell (capped at ``window``)."""
+    def _wall_distance(self, p=None, window=.6):
+        """Distance (m) from ``p`` (default: the drone) to the nearest believed-occupied cell
+        (capped at ``window``)."""
         spec, occ = self.spec, self.belief.occ
-        r, c = (int(v) for v in spec.to_cell(self.pos))
+        p = self.pos if p is None else np.asarray(p, float)
+        r, c = (int(v) for v in spec.to_cell(p))
         k = int(np.ceil(window / spec.resolution))
         sub = occ[max(0, r - k):r + k + 1, max(0, c - k):c + k + 1]
         cells = np.argwhere(sub)
         if not len(cells):
             return window
         xy = spec.to_xy(cells + [max(0, r - k), max(0, c - k)])
-        return float(max(0.0, np.linalg.norm(xy - self.pos, axis=1).min() - spec.resolution / 2))
+        return float(max(0.0, np.linalg.norm(xy - p, axis=1).min() - spec.resolution / 2))
 
     def _commit(self, cost, new_poly):
         """Path commitment: keep the current route unless it is blocked, ends elsewhere, or the

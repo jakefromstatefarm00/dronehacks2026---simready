@@ -230,3 +230,20 @@ def test_phantom_wall_is_forgotten_instead_of_landing():
             break
     assert cmd.mode == "move" and planner.status == "active", (cmd, planner.events[-3:])
     assert any(e["event"] == "forget depth map" for e in planner.events)
+
+
+def test_backs_out_to_open_space_before_looking_around():
+    """Stuck next to a wall: back out along the track before turning in place (turning next to a
+    wall lost visual odometry in the real sim: M1 channel, tunnel mouth)."""
+    from pathplan.online import OnlinePlanner, PlannerConfig
+    occ = box(arena(), .45, 1.5, -1.5, .3)                   # a wall on the right, along the track
+    p = OnlinePlanner(occ, SPEC, ENV, GOAL, PlannerConfig(lookahead_m=0))
+    p.map_resets = 2                                         # (no depth phantoms left to forget)
+    for y in np.arange(-1.1, -.15, .1):                      # fly north from open space toward the right wall
+        cmd = p.update(np.array([-.3 + .4 * (y + 1.1) / .95, y]), np.pi / 2)
+        assert cmd.mode == "move"
+    none = np.empty((0, 2), int)
+    p.observe(none, np.argwhere(box(np.zeros_like(occ), -1.5, 1.5, .2, .3)), none)   # blocked ahead
+    cmd = p.update(np.array([.1, -.1]), np.pi / 2)           # 0.3 m from the block, 0.35 m from the right wall
+    assert cmd.mode == "move" and cmd.reason == "back out to look", (cmd, p.events[-2:])
+    assert p._wall_distance(cmd.path[-1]) >= .5              # back to where there is room to turn

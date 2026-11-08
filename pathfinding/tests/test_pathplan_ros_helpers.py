@@ -79,7 +79,7 @@ def test_node_wiring_published_course_depth_to_command():
     xyz, yaw, rot = FRAME.odometry_to_course((0.0, 0.0, .85), q_yaw(0.0))
     depth = np.full((200, 320), 1.2)
     planner.observe(*project_depth(depth, intr, xyz, rot, spec, expected=prior))
-    cmd = planner.update(xyz[:2], yaw)
-    assert cmd.mode in ("move", "turn")
     forward = CameraMount().offset[0]                     # camera sits this far ahead of the body origin
     assert planner.belief.occ[tuple(spec.to_cell([-2.515, .914 + forward + 1.2]))]   # the wall is in the map
+    cmd = planner.update(xyz[:2], yaw)                    # it blocks the corridor: the planner recovers,
+    assert cmd.mode in ("move", "turn")                   # (forgets depth first) rather than failing
