@@ -1,0 +1,11 @@
+camera_info: 640x400 fx=381.36 fy=381.36 cx=320.00 cy=200.00 frame_id='sky_beta_estimated/base_link/ideal_depth' model='plumb_bob'
+encoding 32FC1; frames received 359 (5.8 Hz sim); recorded 52; receive lag median 33 ms p95 33 ms
+frames with truth within 50 ms: 33
+mount offset (0.115, 0.0, 0.029) pitch_down 0.0 deg: 100.0% of 968 slab hit cells on published walls; 3-D: 14526 points, median distance to course geometry 0.0 cm, 100.0% within 5 cm
+sweep (3-D median distance / within 5 cm / % slab hits on walls):
+  pitch_down +5      0.3 cm   93.4%  100.0% of 1367
+  pitch_down -5      0.8 cm   85.6%   96.1% of 1685
+  yaw +5             3.0 cm   64.0%  100.0% of 623
+  yaw -5             0.7 cm   68.4%   99.4% of 1385
+  offset x +0.10     0.0 cm   95.4%  100.0% of 587
+  offset z +0.10     0.0 cm   88.6%  100.0% of 1243

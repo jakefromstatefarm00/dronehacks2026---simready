@@ -1,0 +1,5 @@
+run | depth | ok | cp | nav_sim | a2d_sim | minclr | n<.28 | pad | frames | on_walls | new_obs | load_mean | load_max
+v425 | on | 1 | 5 | 69.67 | 82.7 | 0.269 | 23 | 0.035 | 674 | 1.0 | 0 | 12.0 | 16.7
+v426 | on | 1 | 5 | 72.5 | 85.79 | 0.263 | 22 | 0.074 | 697 | 1.0 | 0 | 12.4 | 17.2
+v427 | on | 1 | 5 | 65.39 | 78.35 | 0.24 | 58 | 0.03 | 618 | 1.0 | 0 | 12.3 | 16.8
+depth on : completed 3/3; NAVIGATE mean 69.2 s (min 65.4, max 72.5); min clearance >= 0.29 m on 0/3 completed, worst 0.240 m; frames used mean 663; hits on published walls 100%-100%; new obstacles [0, 0, 0]

@@ -33,7 +33,7 @@ You don't need any program flags. `upload_to_flyx.py` already defaults to
 | Image | 640x400, 32FC1 metres (planar z-depth), clip 0.1-10 m, +inf = no return; no noise |
 | Intrinsics | gz CameraInfo: fx = fy = 381.361, cx = 320, cy = 200, no distortion (= 320 / tan(hfov/2), hfov 1.3962634 rad = 80 deg) |
 | Stamps | Gazebo sim time (same clock as /clock and PX4 SITL). Receive lag is about one sim frame (33 ms) |
-| Rate | 15 Hz requested. In practice about 3 Hz sim time, because the rig renders 6 cameras at about 0.5x real time. Rendering load does not change: the rig already subscribes the depth camera |
+| Rate | 15 Hz requested. In practice 3-6 Hz sim time, because the rig renders 6 cameras below real time. Depth-on flights used 310-700 frames. Rendering load does not change: the rig already subscribes the depth camera |
 
 In the run's namespace, `with_depth.py` starts (default `--depth-source relay`):
 
@@ -67,4 +67,38 @@ python jolie_course/gazebo/validate_depth.py gb10-sky-beta-course-vNNN [--airbor
 The script projects each frame with the flown file's own `pathplan.depth_projection` at
 the truth pose. It prints the planner's "% of slab hits on published walls" and a 3-D check:
 the distance of every depth point to the published course OBJ. Results are in
-`results/depth-table.txt`.
+`results/depth-validation-*.txt`; flights are scored with `depth_table.py`.
+
+## Results (Nov 8)
+
+**Geometry.** Checked at the truth pose with the flown file's `project_depth`:
+
+* v401, on the ground: 100 % of slab hits are on published walls, and 100 % of 3-D
+  points lie within 5 cm of the OBJ.
+* v406, 33 airborne frames: 100 % of slab hits are on published walls, and 100 % of
+  14.5 k points lie within 5 cm of the OBJ (median 0.0 cm).
+
+A 5 deg yaw error drops the within-5-cm share to 64 %, and +10 cm in z drops it to 89 %.
+So the default mount is right, and no frame fix is needed. Stamps match odometry:
+280 of 282 frames matched within 50 ms.
+
+**A/B.** Unchanged `upload_to_flyx.py`, interleaved on/off runs, one slot, v407-v424 (load
+gate < 20 at launch; `rig/ab_series.sh`). See `results/depth-ab-table.txt`.
+
+* Several runs in both arms lost VIO on the ground or at takeoff and never flew the course:
+  off v409, v411, v421 (3/8); on v408, v410, v412, v417 (4/11). Other agents' runs failed
+  the same way that night, including runs without depth. Baseline v200-v214 had none.
+* Every run that got past takeoff completed: off 5/5, on 6/6. NAVIGATE mean was
+  64.8 s off and 63.9 s on.
+* Minimum truth clearance was >= 0.29 m on 4/5 off runs (v424 0.214) and 3/6 on runs
+  (worst 0.276).
+* In healthy depth-on runs the planner reported 100 % of hits on published walls and
+  0 new obstacles.
+* New obstacles (129-414, wall share 71-90 %) appeared only after VIO had already
+  diverged. They are phantom walls from a wrong pose. In v410 they kept the drone in
+  "escape" at the start until the flight time limit.
+
+**Drift-correction build** (jolie-drift-correction f7b97d3, depth on, v425-v427): 3/3
+completed, NAVIGATE mean 69.2 s. Min clearance was 0.24-0.27 m, so all 3 runs were below
+0.28 m. The total map alignment was 0.09-0.11 m per flight, while truth VIO error in healthy
+runs here is about 0.05 m. The correction may be adding error, not removing it.
