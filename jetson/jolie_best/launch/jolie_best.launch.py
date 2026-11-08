@@ -10,7 +10,8 @@ landed, disarmed), NOT at arming. Put the drone on the launch mark facing up the
 BEFORE powering the flight controller, and do not move it afterwards; if it was moved, restart the
 competitor window (or the stack) with the drone on the mark.
 
-    ros2 launch jolie_best jolie_best.launch.py                 # FLY (the boot default)
+    ros2 launch jolie_best jolie_best.launch.py                 # FLY: hardcoded route (the boot default)
+    ros2 launch jolie_best jolie_best.launch.py script:=upload_to_flyx_v4c_skybeta.py   # planner v4c
     ros2 launch jolie_best jolie_best.launch.py shadow:=true    # bench: plans + logs, no setpoints
 """
 import os
@@ -29,7 +30,7 @@ INTERFACE = {   # identical to the organizer's competitor example / dronehacks_p
 
 
 def _program(context):
-    script = os.path.join(get_package_share_directory("jolie_best"), "upload_to_flyx_v4c_skybeta.py")
+    script = os.path.join(get_package_share_directory("jolie_best"), LaunchConfiguration("script").perform(context))
     off = LaunchConfiguration("camera_offset").perform(context).split()
     cmd = ["python3", "-u", script, "--camera-offset", *off,
            "--depth-topic", LaunchConfiguration("depth_topic").perform(context)]
@@ -45,6 +46,8 @@ def _program(context):
 
 def generate_launch_description():
     return LaunchDescription([
+        DeclareLaunchArgument("script", default_value="upload_to_flyx_v4c_skybeta_hard.py",
+                              description="program file in the package share: the HARDCODED route (default, 2026-11-08) or upload_to_flyx_v4c_skybeta.py (planner v4c)"),
         DeclareLaunchArgument("shadow", default_value="false", description="true: plan and log only"),
         DeclareLaunchArgument("depth_topic", default_value="/camera/depth/image_raw"),
         DeclareLaunchArgument("camera_offset", default_value="0.1053 0 0.0304",

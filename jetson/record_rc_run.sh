@@ -18,9 +18,9 @@
 # RAM/temperature/power, 1 Hz), kernel USB events, notes, and a per-topic check at the end.
 #
 # SAFETY: the boot program (competitor window, set in /etc/skybeta/drone.env) flies autonomously when the pilot arms with the
-# switch NOT on Position and then flips to Position on the ground. For RC runs this script switches the
-# competitor window to that same program with shadow:=true (no setpoints: Offboard can never start) and restores the normal boot
-# program on Ctrl-C. --keep-competitor leaves it alone (not advised).
+# switch NOT on Position and then flips to Position on the ground. The
+# competitor window is left LIVE by default (team decision 2026-11-08); --shadow switches it to shadow:=true for the run and restores the normal boot
+# program on Ctrl-C. --keep-competitor also leaves it alone.
 #
 # Output: ~/team_ws/runs/rc-<time>/ (or rc-<label>-<time>/)  bag/ (split every 2 GB), notes.txt, check.txt,
 #         tegrastats.log, usb.log, record.log   (root-owned: read with ls/cat/scp, delete with sudo rm -r)
@@ -28,10 +28,10 @@
 #
 # --local: test mode without the drone (no docker / tmux / lsusb; bag under $RUNS or ./runs).
 set -u
-LABEL=""; IMAGES=0; DEPTH=1; KEEP=0; LOCAL=0; AUTOSTOP=1
+LABEL=""; IMAGES=0; DEPTH=1; KEEP=0; LOCAL=0; AUTOSTOP=1; SHADOW=0
 for a in "$@"; do
   case "$a" in
-    --images) IMAGES=1 ;; --no-depth) DEPTH=0 ;; --keep-competitor) KEEP=1 ;; --local) LOCAL=1; KEEP=1 ;; --no-auto-stop) AUTOSTOP=0 ;;
+    --images) IMAGES=1 ;; --no-depth) DEPTH=0 ;; --keep-competitor) KEEP=1 ;; --local) LOCAL=1; KEEP=1 ;; --no-auto-stop) AUTOSTOP=0 ;; --shadow) SHADOW=1 ;;
     -h|--help) sed -n '2,29p' "$0"; exit 0 ;;
     -*) echo "unknown option $a"; exit 2 ;;
     *) LABEL="$a" ;;
@@ -87,9 +87,15 @@ case "$state" in *'"armed": true'*) say "REFUSE: the vehicle is ARMED. Disarm, t
 
 # ---------------------------------------------------------------- competitor -> shadow
 restore() { :; }
+PKG=$(sed -n 's/^COMPETITOR_PKG=//p' /etc/skybeta/drone.env 2>/dev/null | tail -1)
+LAU=$(sed -n 's/^COMPETITOR_LAUNCH=//p' /etc/skybeta/drone.env 2>/dev/null | tail -1)
+if [ "$KEEP" -eq 0 ] && [ "$SHADOW" -eq 0 ]; then
+  # team decision 2026-11-08: never put the boot program in shadow by default. The boot program
+  # (v4c) stays LIVE during the recording: arm (off Position) -> Position on the ground hands it the drone.
+  say "leaving the competitor window as it is ($PKG: LIVE; pass --shadow to make it plan-only)"
+  KEEP=1
+fi
 if [ "$KEEP" -eq 0 ]; then
-  PKG=$(sed -n 's/^COMPETITOR_PKG=//p' /etc/skybeta/drone.env 2>/dev/null | tail -1)
-  LAU=$(sed -n 's/^COMPETITOR_LAUNCH=//p' /etc/skybeta/drone.env 2>/dev/null | tail -1)
   [ -n "$PKG" ] && [ -n "$LAU" ] || { say "REFUSE: COMPETITOR_PKG / COMPETITOR_LAUNCH not found in /etc/skybeta/drone.env"; exit 1; }
   say "switching the competitor window to $PKG $LAU in SHADOW (shadow:=true, no setpoints) for the RC run"
   docker exec "$C" tmux respawn-pane -k -t skybeta:competitor \
@@ -112,7 +118,7 @@ fi
 # a shadow node still REGISTERS a publisher; what matters is whether setpoints actually flow
 sp=$(in_c "timeout -s KILL 5 ros2 topic echo --once /skybeta/setpoint/pose 2>/dev/null" | grep -c "position")
 if [ "$sp" -gt 0 ]; then
-  say "WARNING setpoints ARE being sent on /skybeta/setpoint/pose: an arm -> Position switch could start Offboard"
+  say "setpoints ARE flowing on /skybeta/setpoint/pose: the boot program is LIVE (arm off Position -> Position = autonomy)"
 else
   say "no setpoints flowing on /skybeta/setpoint/pose (arm -> Position cannot start Offboard)"
 fi
