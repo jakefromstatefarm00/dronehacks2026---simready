@@ -1,9 +1,0 @@
-__pycache__/
-*.pyc
-.venv/
-runs/
-gzsim/runs/
-gzsim/.dronehacks-sim/
-build/
-install/
-log/
