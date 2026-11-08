@@ -195,3 +195,17 @@ def test_look_around_turns_toward_the_goal_side_first():
 
 def _wrap_test(a):
     return float(np.arctan2(np.sin(a), np.cos(a)))
+
+
+def test_near_miss_keeps_flying_and_a_real_slip_still_escapes():
+    """Inside the keep-out but clear of the wall: keep following the route (escaping jittered the
+    drone next to maze wall M1 and lost VIO in FlyX runs 6 and 9). Really close: back out."""
+    from pathplan.online import OnlinePlanner, PlannerConfig
+    occ = box(arena(), .5, 1.5, -1.5, 1.5)                  # wall face at x = 0.5 (ENV: radius .15, keep-out .20)
+    for x, expect in ((.5 - .19, ""), (.5 - .16, "escape")):  # 0.19 m: near miss; 0.16 m: < radius + 3 cm
+        p = OnlinePlanner(occ, SPEC, ENV, GOAL, PlannerConfig(lookahead_m=0))
+        p.update(np.array([0.0, -1.1]), np.pi / 2)            # plan from a free spot first
+        cmd = p.update(np.array([x, -.4]), np.pi / 2)
+        assert cmd.mode == "move" and cmd.reason == expect, (x, cmd.reason, p.events[-2:])
+        if not expect:
+            assert any(e["event"] == "keep-out near miss" for e in p.events)

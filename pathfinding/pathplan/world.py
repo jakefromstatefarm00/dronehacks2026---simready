@@ -72,7 +72,10 @@ class Envelope:
     radius: float = .28            # centre to prop tip, m
     half_height: float = .13
     tracking_margin: float = .08   # allowance for tracking error: hard keep-out = radius + this
-    soft_margin: float = .15       # beyond the hard keep-out, cost rises toward walls
+    soft_margin: float = .30       # beyond the hard keep-out, cost rises toward walls. Was 0.15: the
+                                   # route then ran 0.375 m from the walls in the 1 m channel past maze
+                                   # wall M1 (centre 0.42 m) and FlyX runs wobbled into the keep-out there
+                                   # and lost VIO (runs 6, 9); 0.30 centres it (0.425 m) for +0.3 m path
     soft_weight: float = 4.0       # cost at the hard boundary is 1 + soft_weight
 
     @property
