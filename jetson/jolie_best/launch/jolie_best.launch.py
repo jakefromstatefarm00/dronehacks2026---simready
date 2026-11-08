@@ -12,6 +12,7 @@ competitor window (or the stack) with the drone on the mark.
 
     ros2 launch jolie_best jolie_best.launch.py                 # FLY (the boot default)
     ros2 launch jolie_best jolie_best.launch.py shadow:=true    # bench: plans + logs, no setpoints
+    ros2 launch jolie_best jolie_best.launch.py program:=upload_to_flyx_v4c_skybeta.py   # previous copy
 """
 import os
 
@@ -29,7 +30,7 @@ INTERFACE = {   # identical to the organizer's competitor example / dronehacks_p
 
 
 def _program(context):
-    script = os.path.join(get_package_share_directory("jolie_best"), "upload_to_flyx_v4c_skybeta.py")
+    script = os.path.join(get_package_share_directory("jolie_best"), LaunchConfiguration("program").perform(context))
     off = LaunchConfiguration("camera_offset").perform(context).split()
     cmd = ["python3", "-u", script, "--camera-offset", *off,
            "--depth-topic", LaunchConfiguration("depth_topic").perform(context)]
@@ -46,6 +47,8 @@ def _program(context):
 def generate_launch_description():
     return LaunchDescription([
         DeclareLaunchArgument("shadow", default_value="false", description="true: plan and log only"),
+        DeclareLaunchArgument("program", default_value="upload_to_flyx_v4c_skybeta_takeoff.py",
+                              description="real-drone takeoff version; the previous copy: upload_to_flyx_v4c_skybeta.py"),
         DeclareLaunchArgument("depth_topic", default_value="/camera/depth/image_raw"),
         DeclareLaunchArgument("camera_offset", default_value="0.1053 0 0.0304",
                               description="depth camera origin in body FLU, metres (stack TF base_link->oak)"),
