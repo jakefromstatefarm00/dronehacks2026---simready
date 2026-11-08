@@ -248,3 +248,23 @@ def test_backs_out_to_open_space_before_looking_around():
     cmd = p.update(np.array([.1, -.1]), np.pi / 2)           # 0.3 m from the block, 0.35 m from the right wall
     assert cmd.mode == "move" and cmd.reason == "back out to look", (cmd, p.events[-2:])
     assert p._wall_distance(cmd.path[-1]) >= .5              # back to where there is room to turn
+
+
+def test_back_out_retraces_the_track_and_never_cuts_through_a_wall():
+    """Real-sim run 11: backing out flew a straight line to a far, roomy track point - through a
+    wall. It must follow the track it flew (free space), at most 1.5 m."""
+    from pathplan.online import OnlinePlanner, PlannerConfig
+    from pathplan.grid_search import line_cost
+    occ = box(arena(), -1.5, -.25, -.5, 1.5)                 # an L-shaped corridor: north, then the corner...
+    occ = box(occ, .25, 1.5, -1.5, .5)
+    p = OnlinePlanner(occ, SPEC, ENV, GOAL, PlannerConfig(lookahead_m=0))
+    track = [np.array([0.0, y]) for y in np.arange(-1.3, .9, .1)] + [np.array([x, 1.0]) for x in np.arange(0.0, 1.2, .1)]
+    for xy in track:
+        p.update(xy, 0.0)
+    back = p._back_out_path()
+    assert back is not None and np.allclose(back[0], track[-1])
+    length = float(np.sum(np.linalg.norm(np.diff(back, axis=0), axis=1)))
+    assert length <= 1.5 + 1e-9
+    cell = lambda q: (np.asarray(q)[::-1] + SPEC.half_size) / SPEC.resolution - .5
+    for a, b in zip(back, back[1:]):                          # every leg is free space (the walls are inf)
+        assert np.isfinite(line_cost(np.where(occ, np.inf, 1.0), cell(a), [cell(b)])[0])
