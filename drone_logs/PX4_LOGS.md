@@ -1,5 +1,20 @@
 # PX4 flight logs (ULog) of skybeta-06 -- what each one shows
 
+## Session 2 (new camera + cable; logs 68-73 in `drone_logs/qgc_2026-11-08/`, downloaded 2026-11-08 12:26)
+
+| log | length | what happened |
+|---|---|---|
+| 68 | 2 s | armed, vision fused (`cs_ev_pos` true, EV age ~140 ms + 70), disarmed again |
+| **69** | **25 s** | **flew.** Position -> Offboard 1.8 s after arming, liftoff 2.7 s, slow climb to a hover at 0.77-0.86 m (setpoint 0.85), xy drift < 0.1 m, roll/pitch < 2 deg, yaw steady; at 16 s the program starts translating (+y 0.3 m/s), the drone follows 0.3 m behind; **pilot kill at 19.3 s** in a normal hover -> fall, tumble, impact ("Attitude failure (pitch)") 24.2 s, disarm 24.3 s. Vision fused 98 % with test ratio 0.00 until the fall (lost at 20.1 s, after the kill). |
+| 70, 71, 72, 73 | 4-6 s each | armed, "Switching to Position is currently not available", **no vision reaching EKF2 at all** (no `estimator_aid_src_ev_pos`), disarmed |
+
+Reading: the new camera + cable gave a clean estimator for the whole flight (the first time EV fusion
+held through liftoff and translation). The flight itself was nominal until the kill. After the fall the
+vision pipeline was dead for every following attempt -- camera dropped in the impact, or cuVSLAM lost /
+diverged -- and the stack was not restarted, so logs 70-73 are the "no vision at all" failure, not the
+"too old" one. Rule: **after any kill, crash or camera event, restart the stack and re-run the
+preflight before arming again.**
+
 Files: `drone_logs/qgc_2026-11-06/log_24..31_*.ulg` (downloaded with QGC 2026-11-07 23:40; the FC named
 them `/fs/microsd/log/2026-11-06/15_43_38.ulg` etc., UTC). **Today's (2026-11-08) flights are still on
 the Pixhawk SD card** -- QGC -> Analyze Tools -> Log Download over the FC's USB cable; drop them in
