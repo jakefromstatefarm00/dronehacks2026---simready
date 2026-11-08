@@ -1,0 +1,11 @@
+--- a/sim/runtime/gb10_sky_beta_course_run.sh	2026-11-07 16:36:23.000000000 +0000
++++ b/sim/runtime/gb10_sky_beta_course_run.sh	2026-11-08 00:35:14.322781920 +0000
+@@ -11,7 +11,7 @@
+ python3 -m sim.gazebo_smoke --scene artifacts/dronehacks_course_surface_arena_seed2026-v1/world.sdf \
+   --airframe-contract artifacts/sky-beta-estimated-v4/airframe-contract.json \
+   --px4-model-name sky_beta_estimated --record-image \
+-  --record-topic /camera/observer/image,/stereo/left/image,/stereo/right/image,/vio_shadow/trackhist \
++  --record-topic "${RECORD_TOPICS:-/camera/observer/image,/stereo/left/image,/stereo/right/image,/vio_shadow/trackhist}" \
+   --record-vio-odometry --record-all-vio-features ${RECORD_BAG:+--record-bag} --estimator "${ESTIMATOR:-openvins}" ${CUVSLAM_INERTIAL:+--cuvslam-inertial $CUVSLAM_INERTIAL} ${NATIVE_PROGRAM:+--native-program "$NATIVE_PROGRAM"} ${SKYBETA_PROFILE:+--skybeta-profile} ${SKYBETA_MAG_TYPE:+--skybeta-mag-type $SKYBETA_MAG_TYPE} \
+   --with-px4 --external-vision --align-heading --diagnostic-rig --bootstrap-fixture \
+   --ground-station "$HOME/dronehacks-runtime/qgc-v5.1.5/squashfs-root/AppRun" \
