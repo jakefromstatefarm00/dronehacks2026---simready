@@ -30,6 +30,7 @@ import numpy as np
 from .belief import BeliefMap
 from .grid_search import astar, theta_star
 
+MAX_MAP_RESETS = 2      # times per flight the planner may forget depth obstacles before giving up
 NEAR_MISS_M = .03       # inside the keep-out, this much beyond the drone's radius still counts as a near miss
 
 
@@ -107,6 +108,7 @@ class OnlinePlanner:
         self.stats = dict(expansions=0, replans=0, plan_calls=0, escapes=0)
         self.pos = self.yaw = None
         self._near_miss = False
+        self.map_resets = 0
         self.observations = 0                      # depth frames integrated
         self.status = "active"                     # active | done | failed
         self.index = 0
@@ -293,6 +295,19 @@ class OnlinePlanner:
         if not self.optimistic:
             self.optimistic, self.dirty = True, True
             self._event("doubt unconfirmed map")
+            return self._decide()
+        if self.map_resets < MAX_MAP_RESETS:
+            # 4) forget what depth added and retry on the published map: the published course always
+            # has a route, and a phantom wall (misplaced or noisy depth) sealing a passage is what made
+            # the planner give up -> land mid-course in fake-PX4 runs. Real obstacles come back as soon
+            # as the camera sees them again.
+            self.map_resets += 1
+            self._event("forget depth map")
+            self.events[-1]["why"] = why
+            self.belief = BeliefMap(self.prior, self.spec, self.env, self.cfg.suspect_penalty)
+            self.router.reset()
+            self.optimistic, self.dirty = False, True
+            self.looked, self._look_prev, self._look_calls, self._look_target, self._look_dir = 0.0, None, 0, None, None
             return self._decide()
         self._fail(why)
         return Command("failed", reason=why)

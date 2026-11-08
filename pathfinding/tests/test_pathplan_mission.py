@@ -209,3 +209,24 @@ def test_near_miss_keeps_flying_and_a_real_slip_still_escapes():
         assert cmd.mode == "move" and cmd.reason == expect, (x, cmd.reason, p.events[-2:])
         if not expect:
             assert any(e["event"] == "keep-out near miss" for e in p.events)
+
+
+def test_phantom_wall_is_forgotten_instead_of_landing():
+    """Depth marked a wall across the only passage (phantom: it is not really there). After looking
+    around and doubting the published walls, the planner forgets depth obstacles and flies on."""
+    from pathplan.online import OnlinePlanner, PlannerConfig
+    planner = OnlinePlanner(arena(), SPEC, ENV, GOAL, PlannerConfig(lookahead_m=0))
+    phantom = np.argwhere(box(np.zeros((SPEC.n, SPEC.n), bool), -1.5, 1.5, .2, .3))
+    none = np.empty((0, 2), int)
+    planner.observe(none, phantom, none)
+    pos, yaw, modes = np.array([0.0, -1.1]), np.pi / 2, []
+    for _ in range(400):
+        cmd = planner.update(pos, yaw)
+        modes.append(cmd.mode)
+        if cmd.mode == "turn":
+            yaw = cmd.yaw
+            planner.observe(none, none, none)            # a depth frame at this heading (sees nothing new)
+        elif cmd.mode == "move":
+            break
+    assert cmd.mode == "move" and planner.status == "active", (cmd, planner.events[-3:])
+    assert any(e["event"] == "forget depth map" for e in planner.events)

@@ -64,6 +64,7 @@ class FakePX4(Node):
         self.drift, self.true_clear, self.last_dump = np.zeros(3), None, -1e9
         self.in_contact, self.rng = False, np.random.default_rng(int(os.environ.get("FAKE_SEED", "0")))
         self.wobble = np.zeros(3)
+        self.yaw_hist = []
         if os.environ.get("FAKE_DEPTH") == "1":
             self.setup_depth()
         self.slow = {"status": [1 / 1.7, -1e9, None], "land": [1 / .9, -1e9, None]}   # period, last t, last value
@@ -117,6 +118,16 @@ class FakePX4(Node):
             if self.pos[2] >= 0.0 and self.arming == 2:
                 self.arming, self.landed = 1, True
         self.log["max_alt"] = max(self.log["max_alt"], -self.pos[2])
+        # VIO risk: turning faster than 0.35 rad/s (Suraj's data), measured over 0.5 s (this fake turns in
+        # small steps, so a per-step rate reads high even when the average rate is capped at 0.25)
+        self.yaw_hist.append((now, self.yaw))
+        while len(self.yaw_hist) > 2 and now - self.yaw_hist[0][0] > .5:
+            self.yaw_hist.pop(0)
+        if -self.pos[2] > .5 and now - self.yaw_hist[0][0] > .4:
+            t0, y0 = self.yaw_hist[0]
+            rate = abs(math.atan2(math.sin(self.yaw - y0), math.cos(self.yaw - y0))) / (now - t0)
+            if rate > .35:
+                self.log["vio_fast_yaw_s"] = round(self.log.get("vio_fast_yaw_s", 0.0) + self.dt, 3)
         self.true_safety()
         if now - self.last_dump > 1.0:                           # survives kill -9
             self.last_dump = now
@@ -204,6 +215,9 @@ class FakePX4(Node):
     def publish_depth(self):
         stamp = self.get_clock().now().to_msg()      # capture time, like a real camera (before rendering)
         depth = render_depth(self.occ, self.spec, self.pos - self.drift, self.yaw, self.K, self.W, self.H)
+        if -self.pos[2] > .5:                     # VIO risk: camera mostly filled by a surface < 0.4 m away
+            if float(np.mean(depth < .4)) > .4:
+                self.log["vio_blinded_s"] = round(self.log.get("vio_blinded_s", 0.0) + 1 / 13, 3)
         if DEPTH_NOISE > 0:
             depth = depth * (1 + DEPTH_NOISE * self.rng.standard_normal(depth.shape))
         mm = np.where(np.isfinite(depth) & (depth < 10), depth * 1000, 0).astype("<u2")

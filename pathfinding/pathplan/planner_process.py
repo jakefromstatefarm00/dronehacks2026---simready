@@ -20,6 +20,7 @@ WALL_SNAP_M = .25       # depth returns this close to a published wall are that 
                         # stereo noise): FlyX run 6 lost the tight passage past maze wall M1 to them
 HIT_CONFIRM = 3         # vote threshold for a new obstacle cell: +2 per frame that hits it, -1 per
                         # frame, so it must be seen in 2 of ~3 frames (single noisy frames are ignored)
+SOLID_BEHIND_M = .20    # behind a newly seen (unmapped) obstacle face, this deep counts as solid
 MAX_TURN_RATE = .5      # rad/s: depth frames taken while turning faster are dropped (pose error)
 
 
@@ -91,6 +92,17 @@ def planner_process(conn, build_planner):
                 quality["hits_new_confirmed"] += int((ok & ~known).sum())
                 quality["hits_new_ignored"] += int((~ok).sum())
                 hit = hit[ok]
+            if len(hit) and len(behind) and planner.map_resets == 0:
+                # unexpected obstacles: the camera only sees their front face; the first SOLID_BEHIND_M
+                # behind a confirmed new hit is solid (typical obstacle size), so the route keeps its
+                # clearance from the unseen side. Fake-PX4 clutter courses: almost every contact was a
+                # graze on the hidden side of a cylinder the camera had seen. Off once the planner has
+                # had to forget its depth map: if this inference ever sealed a passage that is really
+                # open, re-adding it would just get stuck again (back to suspect-only, the old rule).
+                new = hit[~prior[hit[:, 0], hit[:, 1]]]
+                if len(new):
+                    d = np.linalg.norm(behind[:, None, :] - new[None, :, :], axis=-1).min(axis=1) * spec.resolution
+                    hit = np.vstack([hit, behind[d <= SOLID_BEHIND_M]])
             planner.observe(free, hit, behind)
         cmd = planner.update(xy, yaw)
         if cmd.mode == "move" and cmd.path is not None and len(cmd.path) >= 2:
