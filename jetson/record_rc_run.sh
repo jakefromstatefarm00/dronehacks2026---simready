@@ -2,11 +2,13 @@
 # Record everything useful from a remote-control (RC) run of the course on the Sky Beta drone.
 # Run on the Jetson HOST (plain SSH, not inside the container), with the stack up:
 #
-#   sudo -v                                                # optional: lets it log USB events too
-#   bash ~/team_ws/jetson/record_rc_run.sh run1            # label is optional
-#   bash ~/team_ws/jetson/record_rc_run.sh run2 --images   # + left/right camera, JPEG (heavy: ~3-6 GB/min)
-#   bash ~/team_ws/jetson/record_rc_run.sh run3 --no-depth # without the depth image (~0.9 GB/min less)
-#   ... fly the run on RC ...  then Ctrl-C here: the bag is closed, checked and summarised.
+#   record                      # (the ~/bin/record wrapper) -- or: bash ~/team_ws/jetson/record_rc_run.sh
+#   record --images             # + left/right camera, JPEG (heavy: ~3-6 GB/min)
+#   record --no-depth           # without the depth image (~0.9 GB/min less)
+#   record mylabel              # optional label added to the folder name
+#   ... fly the run on RC ... It stops by itself 5 s after the drone disarms (landed / crashed / killed),
+#   or press Ctrl-C any time. Either way the bag is closed, checked, and its name is printed.
+#   --no-auto-stop              # only Ctrl-C stops it
 #
 # WHAT: every ROS topic on the drone (ros2 bag record -a), EXCEPT the raw / compressed / NITROS camera
 # image streams (hundreds of MB/s). Kept: the depth image the planner uses (/camera/depth/image_raw),
@@ -20,23 +22,23 @@
 # competitor window to that same program with shadow:=true (no setpoints: Offboard can never start) and restores the normal boot
 # program on Ctrl-C. --keep-competitor leaves it alone (not advised).
 #
-# Output: ~/team_ws/runs/rc-<label>-<time>/  bag/ (split every 2 GB), notes.txt, check.txt,
+# Output: ~/team_ws/runs/rc-<time>/ (or rc-<label>-<time>/)  bag/ (split every 2 GB), notes.txt, check.txt,
 #         tegrastats.log, usb.log, record.log   (root-owned: read with ls/cat/scp, delete with sudo rm -r)
-# Copy to a laptop:  scp -r dronehacks@skybeta-06.local:~/team_ws/runs/rc-<label>-<time> .
+# Copy to a laptop:  scp -r dronehacks@skybeta-06.local:~/team_ws/runs/rc-<time> .   (printed at the end)
 #
 # --local: test mode without the drone (no docker / tmux / lsusb; bag under $RUNS or ./runs).
 set -u
-LABEL="run"; IMAGES=0; DEPTH=1; KEEP=0; LOCAL=0
+LABEL=""; IMAGES=0; DEPTH=1; KEEP=0; LOCAL=0; AUTOSTOP=1
 for a in "$@"; do
   case "$a" in
-    --images) IMAGES=1 ;; --no-depth) DEPTH=0 ;; --keep-competitor) KEEP=1 ;; --local) LOCAL=1; KEEP=1 ;;
-    -h|--help) sed -n '2,27p' "$0"; exit 0 ;;
+    --images) IMAGES=1 ;; --no-depth) DEPTH=0 ;; --keep-competitor) KEEP=1 ;; --local) LOCAL=1; KEEP=1 ;; --no-auto-stop) AUTOSTOP=0 ;;
+    -h|--help) sed -n '2,29p' "$0"; exit 0 ;;
     -*) echo "unknown option $a"; exit 2 ;;
     *) LABEL="$a" ;;
   esac
 done
 C=skybeta-stack
-NAME="rc-$LABEL-$(date +%Y%m%d-%H%M%S)"
+NAME="rc-${LABEL:+$LABEL-}$(date +%Y%m%d-%H%M%S)"
 if [ "$LOCAL" -eq 1 ]; then
   RUNDIR="${RUNS:-$PWD/runs}/$NAME"; HOSTDIR="$RUNDIR"
   in_c() { bash -c "$*"; }
@@ -76,7 +78,7 @@ in_c "mkdir -p $RUNDIR"
 free_gb=$(df -BG --output=avail "$(dirname "$HOSTDIR")" 2>/dev/null | tail -1 | tr -dc 0-9)
 say "disk free: ${free_gb:-?} GB (about 1 GB per minute with depth; 4-7 GB per minute with --images)"
 [ "${free_gb:-99}" -lt 5 ] && say "WARNING less than 5 GB free"
-state=$(in_c "timeout 6 ros2 topic echo --once --full-length /skybeta/state 2>/dev/null" | head -1)
+state=$(in_c "timeout -s KILL 6 ros2 topic echo --once --full-length /skybeta/state 2>/dev/null" | head -1)
 case "$state" in
   *'"px4_link": true'*) say "PX4 link up" ;;
   *) say "WARNING /skybeta/state missing or px4_link false: is the flight controller powered?" ;;
@@ -108,7 +110,7 @@ if [ "$KEEP" -eq 0 ]; then
   sleep 3
 fi
 # a shadow node still REGISTERS a publisher; what matters is whether setpoints actually flow
-sp=$(in_c "timeout 5 ros2 topic echo --once /skybeta/setpoint/pose 2>/dev/null" | grep -c "position")
+sp=$(in_c "timeout -s KILL 5 ros2 topic echo --once /skybeta/setpoint/pose 2>/dev/null" | grep -c "position")
 if [ "$sp" -gt 0 ]; then
   say "WARNING setpoints ARE being sent on /skybeta/setpoint/pose: an arm -> Position switch could start Offboard"
 else
@@ -125,7 +127,7 @@ fi
   echo "v4c sha256: $(sha256sum ~/team_ws/src/jolie_best/scripts/upload_to_flyx_v4c_skybeta.py 2>/dev/null | cut -c1-16)"
   echo "state at start: $state"
   echo "record: ros2 bag record -a --exclude '$EXCL'"
-  echo "topics at start:"; in_c "timeout 10 ros2 topic list -t 2>/dev/null" | sed 's/^/  /'
+  echo "topics at start:"; in_c "timeout -s KILL 10 ros2 topic list -t 2>/dev/null" | sed 's/^/  /'
 } > "$TMP/notes.txt"
 c_cp "$TMP/notes.txt" "$RUNDIR/notes.txt"
 TG=; DM=
@@ -146,9 +148,31 @@ set -m
 in_c "cd $RUNDIR && exec ros2 bag record -a $XOPT '$EXCL' --max-bag-size 2000000000 -o bag" > "$TMP/record.log" 2>&1 &
 REC=$!
 set +m
+WATCH=
+if [ "$AUTOSTOP" -eq 1 ]; then
+  ME=$$
+  # one long-lived subscription to /skybeta/state (a CLI call per check is too slow to discover);
+  # stop 5 s after a disarm that follows an arming seen during this recording (land / crash / kill)
+  (
+    seen_armed=0
+    in_c "exec ros2 topic echo /skybeta/state </dev/null 2>/dev/null" 2>/dev/null | grep --line-buffered -oE '"armed": (true|false)' |
+    while read -r _ a; do
+      case "$a" in
+        true) [ $seen_armed -eq 0 ] && say "drone ARMED: recording continues until it disarms (or Ctrl-C)"; seen_armed=1 ;;
+        false) if [ $seen_armed -eq 1 ]; then say "drone DISARMED (landed / crashed / killed): stopping in 5 s"; sleep 5; kill -TERM $ME; exit 0; fi ;;
+      esac
+    done
+  ) & WATCH=$!
+  say "auto-stop on: the recording ends 5 s after the drone disarms (Ctrl-C works any time)"
+fi
 T0=$(date +%s)
 finish() {
   trap - INT TERM
+  if [ -n "$WATCH" ]; then        # the state subscription (it runs inside the container on the drone)
+    kill $WATCH 2>/dev/null; pkill -P $WATCH 2>/dev/null
+    if [ "$LOCAL" -eq 1 ]; then pkill -f "ros2 topic echo /skybeta/state" 2>/dev/null
+    else docker exec "$C" pkill -f "ros2 topic echo /skybeta/state" 2>/dev/null; fi
+  fi
   say "stopping the recorder ($(( $(date +%s) - T0 )) s recorded)..."
   stop_rec() {   # $1 = signal; the recorder writes metadata.yaml when it shuts down cleanly
     if [ "$LOCAL" -eq 1 ]; then pkill "-$1" -f "ros2 bag record -a" 2>/dev/null
@@ -181,7 +205,12 @@ finish() {
   if [ -n "$missing" ]; then say "MISSING key topics (0 messages): $missing"; else say "all key topics have data"; fi
   grep -qi "disconnect" "$TMP/usb.log" 2>/dev/null && say "WARNING USB disconnects during the run: see usb.log"
   grep -qiE "error|failed" "$TMP/record.log" 2>/dev/null && say "recorder reported errors: see record.log"
-  say "files: $HOSTDIR"
+  echo
+  say "=================================================================="
+  say "RECORDING SAVED:  $NAME"
+  say "  on the Jetson:  $HOSTDIR"
+  say "  to the laptop:  scp -r dronehacks@$(hostname).local:$HOSTDIR ."
+  say "=================================================================="
   rm -rf "$TMP"
   exit 0
 }
