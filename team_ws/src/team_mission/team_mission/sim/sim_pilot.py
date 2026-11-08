@@ -126,7 +126,8 @@ class SimPilot(Node):
             if self.require_mission:      # the mission is up and streaming hold setpoints
                 ready = ready and (self.mission.get('phase') == 'DORMANT'
                                    or self.mission.get('state') in ('STREAM', 'WAIT_OFFBOARD',
-                                                                    'WAIT_FOR_OFFBOARD'))
+                                                                    'WAIT_FOR_OFFBOARD',
+                                                                    'READY'))   # dronehacks_pathplan
             if ready and dt > self.wait_s:
                 self.goto('MODE')
         elif self.step_name == 'MODE':
