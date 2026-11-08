@@ -483,6 +483,10 @@ def vio_hazard(yaw_rate, speed):
     return min(h, 5.0)
 
 
+FITNESS_VERSION = 2
+YV_FREE = .10        # rad m / s^2: the base at its 0.25 rad/s cap and ~0.4 m/s; Gazebo divergences began at 0.19-0.42
+
+
 @dataclass
 class EpisodeResult:
     level: str
@@ -510,15 +514,24 @@ class EpisodeResult:
     note: str = ""
     info: dict = field(default_factory=dict)
     variant: str = "proven"
+    yv_excess: float = 0.0                  # integral of max(0, |yaw rate| x speed - YV_FREE) dt (rad m/s, s)
+    yv_peak: float = 0.0                    # peak |yaw rate| x speed anywhere (rad m / s^2)
+    corner_yv_peak: float = 0.0             # ... within 1 m of the first corridor-to-maze corner
     align_total_m: float = 0.0
     drift_final_m: float = 0.0
     traj: list = field(default_factory=list)
 
-    def fitness(self):
-        """Episode return used for training (truth only here, never in the policy's input)."""
+    def fitness(self, version=FITNESS_VERSION):
+        """Episode return used for training (truth only here, never in the policy's input).
+        v2 (round 2): any contact is a fixed -300, more than the whole time reward can buy back
+        (<= 90), and yaw-rate x speed above YV_FREE (the calibrated VIO divergence trigger) costs."""
         f = 40.0 * self.complete + 8.0 * self.cps_true
         if self.complete:
             f += 0.5 * (180.0 - self.course_time)
+        if version >= 2:
+            if self.contact:
+                return -300.0 + 8.0 * self.cps_true - 100.0 * self.yv_excess
+            f -= 100.0 * self.yv_excess
         f -= 80.0 * self.contact
         f -= 100.0 * self.clearance_deficit
         f -= 30.0 * self.vio_risk + 5.0 * self.vio_events
@@ -660,6 +673,12 @@ def run_episode(level, seed, policy_params=None, residual=False, record=False, m
             px4._blip = px4.failsafe
             # ------------------------------------------------ visual odometry
             speed = float(np.linalg.norm(sim.v[:2]))
+            if sim.p[2] > .3:
+                yv = abs(sim.yaw_rate) * speed
+                res.yv_excess += max(0.0, yv - YV_FREE) * DTS
+                res.yv_peak = max(res.yv_peak, yv)
+                if np.linalg.norm(sim.p[:2] - VIO_CORNER_XY) < 1.0:
+                    res.corner_yv_peak = max(res.corner_yv_peak, yv)
             if sim.p[2] > .3 and level.vio_model == "corner":
                 h = corner_hazard(sim.p[:2], sim.yaw_rate, speed)
                 res.vio_risk += h * DTS

@@ -60,6 +60,17 @@ def run_tasks(tasks, workers=None):
     return pool(workers).map(_run, tasks, chunksize=1)
 
 
+def wilson(k, n, z=1.96):
+    """95 % Wilson score interval for k successes in n trials."""
+    if n == 0:
+        return (float("nan"), float("nan"))
+    p = k / n
+    d = 1 + z * z / n
+    c = (p + z * z / (2 * n)) / d
+    h = z * math.sqrt(p * (1 - p) / n + z * z / (4 * n * n)) / d
+    return (max(0.0, c - h), min(1.0, c + h))
+
+
 def summarize(rows, by_variant=False):
     """Per (level, residual) metrics, or (level, variant, residual) with ``by_variant``.
     Clearance stats are over each run's minimum true clearance; time = NAVIGATE (sim s)."""
@@ -76,6 +87,11 @@ def summarize(rows, by_variant=False):
         table[key] = {
             "n": len(rs), "errors": sum("error" in r for r in rs),
             "completion": len(done) / len(rs),
+            "completion_ci": wilson(len(done), len(rs)),
+            "contact_ci": wilson(sum(bool(r.get("contact")) for r in rs), len(rs)),
+            "time_ci_half": float(1.96 * np.std(t, ddof=1) / math.sqrt(len(t))) if len(done) > 1 else float("nan"),
+            "corner_yv_peak": float(np.mean([r.get("corner_yv_peak", 0) for r in rs])),
+            "yv_excess": float(np.mean([r.get("yv_excess", 0) for r in rs])),
             "time_mean": float(np.nanmean(t)), "time_p90": float(np.nanpercentile(t, 90)) if done else float("nan"),
             "clear_min": float(mc.min()) if len(mc) else float("nan"),
             "clear_p5": float(np.percentile(mc, 5)) if len(mc) else float("nan"),
