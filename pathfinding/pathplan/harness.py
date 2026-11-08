@@ -31,10 +31,11 @@ START_XY = np.array([-2.515, .914])        # launch mark
 START_YAW = np.pi / 2                      # facing up the first corridor
 
 
-def load_published(repo=REPO):
-    sys.path.insert(0, str(repo))
+def load_published(repo=None):
+    """The published course and its gate list (``config/course_v3.yaml`` + the OBJ)."""
+    sys.path.insert(0, str(REPO))
     from drl.config import load_config
-    _, course, route = load_config(str(repo / "config/course_v3.yaml"))
+    _, course, route = load_config(None if repo is None else str(Path(repo) / "config/course_v3.yaml"))
     return course, route
 
 

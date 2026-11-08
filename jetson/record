@@ -1,6 +1,0 @@
-#!/usr/bin/env bash
-# One command for every recording on the drone (rosbag + teleop/RC runs): record [label] [--images] [--no-depth]
-# Install on the Jetson:  mkdir -p ~/bin && cp jetson/record ~/bin/record && chmod +x ~/bin/record
-# (~/.profile puts ~/bin on PATH). Ctrl-C stops it. Output: ~/team_ws/runs/rc-<label>-<time>/
-sudo -v 2>/dev/null || true          # lets it log USB events too (asks for the password once)
-exec bash ~/team_ws/jetson/record_rc_run.sh "$@"

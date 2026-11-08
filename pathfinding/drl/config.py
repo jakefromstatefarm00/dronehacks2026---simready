@@ -9,6 +9,29 @@ import yaml
 
 from .course import Course, build_course
 
+
+
+def data_root() -> str:
+    """The folder holding ``config/course_v3.yaml`` and ``course/`` (the published course).
+
+    In order: ``$DRONEHACKS_PATHFINDING_DATA``; the source checkout this file sits in (a
+    ``--symlink-install`` build, a test run, a clone); the ROS package's installed share
+    directory (``share/dronehacks_pathplan``, a plain ``colcon build``).
+    """
+    here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    candidates = [os.environ.get("DRONEHACKS_PATHFINDING_DATA", ""), here]
+    try:
+        from ament_index_python.packages import get_package_share_directory
+        candidates.append(get_package_share_directory("dronehacks_pathplan"))
+    except Exception:                      # no ROS, or the package is not installed
+        pass
+    for c in candidates:
+        if c and os.path.isfile(os.path.join(c, "config", "course_v3.yaml")):
+            return c
+    raise FileNotFoundError("cannot find config/course_v3.yaml: set DRONEHACKS_PATHFINDING_DATA to the "
+                            "pathfinding folder (tried: " + ", ".join(c for c in candidates if c) + ")")
+
+
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
@@ -73,12 +96,13 @@ def resolve_gates(spec: list, course: Course) -> Gates:
 
 
 def load_config(path: str | None = None):
-    path = path or os.path.join(ROOT, "config", "course_v3.yaml")
+    root = data_root() if path is None else os.path.dirname(os.path.dirname(os.path.abspath(path)))
+    path = path or os.path.join(root, "config", "course_v3.yaml")
     with open(path) as fh:
         cfg = yaml.safe_load(fh)
     obj = cfg["course_obj"]
     if not os.path.isabs(obj):
-        obj = os.path.join(ROOT, obj)
+        obj = os.path.join(root, obj)
     course = build_course(obj)
     gates = resolve_gates(cfg["gates"], course)
     return cfg, course, gates

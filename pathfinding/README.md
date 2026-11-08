@@ -1,104 +1,287 @@
-# pathfinding: Jolie's online path planner
+# pathfinding: our path planner as a Sky Beta competitor package
 
-Everything needed to run, test and change Jolie's pathfinding. It flies as **`jolie_course`**
-(`../jolie_course/`), on the Sky Beta contract, the same interface as on the drone.
+This whole folder is **one ROS 2 package, `dronehacks_pathplan`**. It goes in `team_ws/src/`
+**unchanged, on the drone and in the simulator**. It runs beside the organisers' Sky Beta
+stack, which stays untouched.
 
-| | What | Where |
+It is the flight logic of the old `upload_to_flyx.py`, moved onto the organisers' contract:
+
+- the same Theta\* replanning and depth voting
+- the same carrot setpoints
+- the same 0.25 rad/s heading limit, odometry-pause hold and pad centring
+- the planner in its own process
+- the same run limit
+
+The difference is that **nothing talks to PX4 directly any more**:
+
+| | old `upload_to_flyx.py` (native PX4) | **this package (Sky Beta)** |
 |---|---|---|
-| **The algorithm** | Theta\* re-planning on a map built from the published layout and corrected by a depth camera | `pathplan/` |
-| **The flight program** | the Sky Beta ROS node (no `/fmu`), and its generated single file | `ros2/dronehacks_pathplan/`, `flyx/pathplan_mission.py` |
-| **The simulation** | Offline benchmark (seconds) | `pathplan/harness.py` |
+| Who arms / enters Offboard | the program itself | **the pilot** arms (Altitude), then selects Position; `flight_interface` enters Offboard |
+| Setpoints | `/fmu/in/trajectory_setpoint` (NED) | `/skybeta/setpoint/pose` (ENU `odom`); `flight_interface` converts and clamps |
+| Health | `/fmu/out/*` | `/skybeta/state` + `/visual_slam/tracking/odometry` |
+| End of the course | PX4 Land | descend to the 0.3 m floor over the pad and **hold: the pilot lands** (Sky Beta has no land command) |
+| Lost sensors in the air | PX4 Land | `/skybeta/hold` (freeze), stop commanding: **the pilot takes over** |
+| Runs on the drone? | **no**: it breaks the "never publish `/fmu/in`" rule, and `flight_interface` blocks it | **yes**: it is what the competitor window launches |
 
-## Quick start
+The old single-file programs are kept outside the workspace, in
+`dronehacks2026---simready-main/pathfinding_flyx_original/`. Do not put them back into
+`team_ws`.
 
-```bash
-cd pathfinding
-python3 -m venv .venv && .venv/bin/pip install -r requirements.txt     # Windows: .venv\Scripts\pip
-.venv/bin/python -m pytest -q tests                                     # 154 tests, ~15 s
-.venv/bin/python -m pathplan.harness --variants 4 --output runs/bench   # offline benchmark, ~4 min
+---
+
+## 1. What is in the folder
+
+```
+pathfinding/                       <- = the ROS 2 package dronehacks_pathplan (package.xml, setup.py)
+├── dronehacks_pathplan/           the Sky Beta side
+│   ├── node.py                    THE NODE: ROS in/out, journal, graph checks         (pathplan_node)
+│   ├── mission.py                 the state machine, pure Python: what to send, when
+│   ├── planner_core.py            planner + depth voting; runs in its own process
+│   ├── sim_pilot.py               SIM ONLY: stands in for the safety pilot            (sim_pilot)
+│   ├── fake_px4.py                TEST ONLY: fake PX4 + cuVSLAM for the self-test     (fake_px4)
+│   ├── check_pipeline.py          read-only: is everything flowing?                   (check_pipeline)
+│   ├── report.py                  journal -> timeline, result, plot                   (report)
+│   └── dry_run.py                 closed loop without ROS                             (dry_run)
+├── launch/
+│   ├── pathplan.launch.py         THE DRONE LAUNCH: flight_interface + our node (competitor window)
+│   ├── sim.launch.py              simulator: the drone launch + sim pilot (+ vision bridge if missing)
+│   └── selftest.launch.py         no simulator: real flight_interface + our node + fake PX4
+├── pathplan/                      the planner (Theta*/A*, occupancy, depth projection, benchmark)
+├── drl/                           OBJ -> course geometry loader
+├── config/course_v3.yaml, course/ the published course (installed with the package)
+├── tests/                         pytest, no ROS needed (152 tests, ~25 s)
+└── gzsim/                         Gazebo test bed for the planner alone (development tool)
 ```
 
-## The algorithm (`pathplan/`)
+The build installs the `dronehacks_pathplan`, `pathplan` and `drl` modules, the launch files
+and the course into the overlay. `gzsim/` and `tests/` are not installed.
 
-The drone gets only the **five checkpoints** (first corridor, maze exit, tunnel, window or
-Gate B, landing pad) — no waypoint list. It plans on a 2-D occupancy grid at 0.9 m, built
-from the published OBJ, and corrects the grid from depth images while flying.
+---
 
-| Module | Role |
+## 2. How it fits in the pipeline
+
+```
+           DRONE                                         FLYX LAB (simulator)
+ OAK-D -> cuVSLAM (slam window)                 simulated stereo -> lab cuVSLAM
+      -> /visual_slam/tracking/odometry  ======  /visual_slam/tracking/odometry
+ px4_odom_bridge (bridge window)                 lab vision bridge (or Sky Beta's; sim.launch decides)
+      -> /fmu/in/vehicle_visual_odometry -> PX4 EKF2
+ XRCE agent (agent window)                       lab XRCE agent (never start a second one)
+
+ ---------------- competitor window = `ros2 launch dronehacks_pathplan pathplan.launch.py` ----------------
+ flight_interface (Sky Beta, unmodified)  <- /skybeta/setpoint/pose -  dronehacks_pathplan (ours)
+   |  owns the Offboard heartbeat, ENU->NED, 0.3 m floor,              -> /skybeta/state ->  |
+   |  auto-Offboard when the pilot arms then selects Position           /visual_slam/... -> |
+   v                                                                    depth (optional) -> |
+ /fmu/in/{offboard_control_mode, trajectory_setpoint, vehicle_command} -> PX4
+```
+
+Our node only ever touches the four Sky Beta topics, plus `/skybeta/hold` on a fault.
+
+---
+
+## 3. What the drone does (the mission)
+
+| State | What is happening | What our node sends |
+|---|---|---|
+| `WAIT_HEALTH` | Waits for **all** of: fresh odometry, `/skybeta/state`, PX4 link, a valid PX4 position, landed, disarmed, `/skybeta/hold` not in force, nobody else commanding. All must hold for 2 s. | **nothing**, so `flight_interface` *cannot* enter Offboard |
+| `READY` | Healthy on the ground. The note says *"pilot may arm"*. | "hold here" (the stream that allows Offboard) |
+| `ARMED` | The pilot armed. **The course frame is latched now**: the drone must be on the launch mark, facing up the first corridor. | "hold here" |
+| `TAKEOFF` | The pilot selected Position, so `flight_interface` entered Offboard. Climb on a 0.4 m/s ramp to 0.9 m. | climb setpoints |
+| `NAVIGATE` | Theta\* through the five checkpoints. Carrot 0.5 m ahead, heading ≤ 0.25 rad/s. Odometry paused > 0.3 s: hold. | carrot setpoints |
+| `PAD` → `DESCEND` | Pad reached: centre to ≤ 8 cm, then ramp down at 0.3 m/s to the floor (0.3 m above where SLAM started). | pad setpoints |
+| `LOW_HOLD` | Holds low over the pad with `land_request: true`. **PILOT: LAND NOW.** PX4 disarms itself after touchdown. | hold low |
+| `DONE` | Disarmed. After 3 s it goes back to `WAIT_HEALTH` with a fresh planner for the next flight. | nothing |
+
+**When things go wrong:**
+
+| Event | What the node does |
 |---|---|
-| `world.py` | course -> occupancy/clearance/cost grids; checkpoint lines |
-| `belief.py` | the drone's map: published layout + depth observations |
-| `grid_search.py` | **Theta\*** (default, any-angle) and A\* |
-| `online.py` | `OnlinePlanner`: `observe(depth cells)`, `update(pose) -> move / turn / done / failed` |
-| `depth_projection.py` | depth image + intrinsics + pose -> map cells |
-| `ros_node.py` | odom frame helpers and `build_planner()` |
-| `mission.py`, `sensor.py`, `variants.py`, `harness.py` | offline simulator + benchmark over perturbed courses |
-| `dstar_lite.py` | D\* Lite (experimental; slower than Theta\* here) |
+| The pilot takes over (sticks / mode switch), or a PX4 failsafe | `TAKEN_OVER`: stops commanding. Offboard returns only after disarm + re-arm. |
+| Odometry gone 3 s, PX4 position invalid, PX4 link lost, `/skybeta/state` silent 5 s, another commander appears | `FAULT`: calls `/skybeta/hold` once and stops commanding. The pilot takes over and lands. |
+| Planner fails, or the 175 s run limit passes | descends where it is and `LOW_HOLD`s: the pilot lands |
+| Pilot armed before the node was READY | not flown: no setpoints, so no Offboard. Disarm and wait for READY. |
+| Our node crashes or is stopped in flight | `flight_interface` keeps holding the last setpoint (a hover). The pilot lands. |
+| `shadow:=true` | maps and plans, never publishes a setpoint. Offboard cannot start. |
 
-Behaviours that each fixed a failure we saw: look ahead before moving (turn in place if the
-next stretch is outside the camera view); treat space just behind a newly seen obstacle as
-risky; never straighten a path toward walls; replan when the map changes near the path;
-when stuck, look around, then doubt published walls the camera has not confirmed; accept
-Gate B when the window approach is blocked.
+**Course frame.** cuVSLAM's `odom` frame starts wherever SLAM started. With
+`frame_latch:=arm` (the default), the node reads the drone's odom pose **at the moment the
+pilot arms**, and takes that pose to be the launch mark `(-2.515, 0.914)`, facing course +y.
+It therefore does not matter where the drone was powered on, **as long as it sits on the mark,
+facing up the first corridor, when it is armed**. `frame_latch:=slam_origin` instead assumes
+SLAM started on the mark.
 
-## Flying it (`flyx/`, run as `jolie_course`)
+---
+
+## 4. In the FlyX lab (simulator)
+
+**Upload** into `/var/lib/flyx-lab/workspace`:
+
+```
+skybeta-main/                  (or skybeta/) the organisers' folder, unchanged
+team_ws/src/pathfinding/       THIS folder
+```
+
+**Build** (once, and again after changing `package.xml`, `setup.py` or a launch file). Python
+edits need no rebuild:
 
 ```bash
-bash flyx_skybeta/run.sh jolie                  # FlyX / sim, from the repo root
-python3 jolie_course/jolie_course.py            # on the drone (the pilot arms)
+W=/var/lib/flyx-lab/workspace
+SB=$W/skybeta-main                       # your Sky Beta folder name
+cd $SB && colcon build --packages-select skybeta_flight_interface oakd_vslam_bringup || exit
+source $SB/install/setup.bash
+cd $W/team_ws && colcon build --symlink-install || exit
+source $W/team_ws/install/setup.bash
+ros2 pkg executables dronehacks_pathplan        # 6 executables
 ```
 
-`ros2/dronehacks_pathplan/` is the ROS node, and it is also a colcon package. It reads
-`/visual_slam/tracking/odometry` and `/skybeta/state` and publishes `/skybeta/setpoint/pose`. It
-never arms, never changes mode and never lands. `tools/build_single_file.py` embeds it and the
-planner into `flyx/pathplan_mission.py`, which is what `jolie_course` runs. See
-[`ros2/dronehacks_pathplan/README.md`](ros2/dronehacks_pathplan/README.md) and
-[`../jolie_course/README.md`](../jolie_course/README.md). The history of the earlier
-native-PX4 FlyX runs, whose fixes are now in the node, is in [`flyx/README.md`](flyx/README.md).
+Every new terminal needs both `source` lines.
 
-## The simulation
+**Check, then fly.** Reset world first.
 
-**Offline benchmark** (`python -m pathplan.harness`): 13 courses (published + shifted walls +
-unmapped clutter), kinematic drone, ray-cast depth camera. Sky Beta size, Theta\*:
-
-| Planner | Finished | Crashed | Mean checkpoint pts (of 35) |
-|---|---:|---:|---:|
-| published map only (`static`) | 5 | 8 | 25.4 |
-| **Theta\* replanning** | **13** | 0 | **35.0** |
-
-**Gazebo (history).** Earlier versions were flown in a plain Gazebo Harmonic world, using the
-course and the X3 quad from [machmoon/dronehacks-sim](https://github.com/machmoon/dronehacks-sim)
-with ground-truth pose. That test bed (`gzsim/`) has been removed; it is in git history. Results:
-
-| Run | World | Depth | Result |
-|---|---|---|---|
-| 02 | published | on | completed, 80.3 s, 0 contacts, landed 0.05 m |
-| 05 | + 1 unmapped cylinder | on | completed, 79.0 s, 0 contacts (cylinder included), landed 0.07 m |
-| 06 | same cylinder | **off** | **failed: hit the cylinder** after the tunnel |
-| commit-1 | + 1 unmapped cylinder | on | completed, 109.1 s, 0 contacts, landed 0.07 m (with path commitment) |
-| commit-3 | published | on | completed, 98.1 s, 0 contacts, min clearance 0.379 m, landed 0.06 m |
-
-**Known limits.** The X3 (radius 0.36 m) is bigger than Sky Beta (0.28 m): the passage over
-maze wall M1 leaves it ~6 cm, so Gazebo runs need the 2.5 cm grid (`--resolution`) and are
-not always clean there (one earlier run touched the north net). The adapter now slows down where
-the published map is tight (`--tight-speed`, from map clearance, never ground truth); both runs since
-were clean. Gazebo
-uses ground-truth pose (no cuVSLAM) and velocity control (not PX4). Near an unmapped obstacle two routes can cost almost the same; the planner now keeps its route
-unless a new one is >10 % cheaper (`commit_margin`), which fixed the verify-3 stall. Gazebo
-times are slow (98–197 s) because of the X3's cautious tight-spot speed (0.15 m/s) — speed
-tuning is open. Depth frames are
-projected with the latest pose, not the pose at capture time — fine at these speeds, the
-next thing to fix. Checkpoint lines 1–2 are our reading of the rules, not official
-coordinates.
-
-## Layout
-
+```bash
+ros2 run dronehacks_pathplan check_pipeline                 # read-only, 15 s: fix every FAIL
+ros2 launch dronehacks_pathplan sim.launch.py shadow:=true pilot:=none   # plan only (Ctrl-C after ~20 s)
+# team approves the flight, Reset world, then:
+ros2 launch dronehacks_pathplan sim.launch.py               # flies; the sim pilot arms and lands
+ros2 run dronehacks_pathplan report                          # second terminal, after the flight
 ```
-pathplan/        the algorithm + offline benchmark
-ros2/            dronehacks_pathplan: the Sky Beta ROS node (source)
-flyx/            pathplan_mission.py (the node as one file, generated), README (FlyX run history)
-tools/           build_single_file.py
-course/ config/  the published course (OBJ) and its gate list
-drl/             the team's OBJ -> collision-primitives loader (used by pathplan)
-tests/
-```
+
+What `sim.launch.py` does:
+
+- **Starts the drone launch** with `use_sim_time:=true` and `allow_mode_request:=true`. The
+  latter is sim only.
+- **Starts the sim pilot**, which does what the RC pilot does:
+  - `pilot:=drone_like` (default): Altitude → arm → Position. This exercises the real
+    auto-Offboard path.
+  - If the sim refuses Altitude without RC, use `pilot:=direct`: it requests Offboard, then arms.
+  - `pilot:=none`: you fly the pilot part with keyboard RC: arm in Altitude, switch to
+    Position, and land at `LOW_HOLD`.
+- **Starts Sky Beta's `px4_odom_bridge` only if nothing publishes
+  `/fmu/in/vehicle_visual_odometry`.** The lab normally bridges vision itself.
+- **Depth:** `depth_topic` defaults to the lab's `/camera/depth/image_raw`. Pass
+  `depth_topic:=''` to fly like the stock drone, on the published map only.
+
+**Pass criteria** for a lab flight. The node prints a summary, and `report` repeats it:
+
+- `RESULT: over the pad (… m from its centre)`, with checkpoints cleared 5/5
+- states `READY -> ARMED -> TAKEOFF -> NAVIGATE -> PAD -> DESCEND -> LOW_HOLD -> TAKEN_OVER -> DONE`.
+  The `TAKEN_OVER` here is the pilot's Land.
+- `odom vs PX4 local position gap` stays small (< 0.15 m)
+- no `FAULT`, and control-loop stalls far below 1 s
+- depth: most hits on published walls. A low share means a wrong camera mount or frame.
+
+---
+
+## 5. On the drone
+
+1. **Copy this folder to `~/team_ws/src/pathfinding`.** Copy only this folder, never the
+   whole repository: a `skybeta/` copy inside `team_ws` would replace the organisers'
+   packages.
+2. **Edit `/etc/skybeta/drone.env`.** Change only these two lines, and touch nothing else in
+   it (DRONE_ID, ROS_DOMAIN_ID, TEAM):
+   ```
+   COMPETITOR_PKG=dronehacks_pathplan
+   COMPETITOR_LAUNCH=pathplan.launch.py
+   ```
+3. **Restart the stack, on the ground, drone still:** `docker rm -f skybeta-stack`. It returns
+   in about 10 s. The competitor window runs `team_build.sh`, then
+   `ros2 launch dronehacks_pathplan pathplan.launch.py`.
+4. **Watch it:** `docker exec -it skybeta-stack tmux attach -t skybeta`, then the competitor
+   window. Or from a container shell (`host/run.sh shell`):
+   ```bash
+   ros2 topic echo /dronehacks_pathplan/status        # state, note, cleared
+   ros2 run dronehacks_pathplan check_pipeline --depth-topic ''
+   ```
+5. **Flight:**
+   1. Put the drone on the launch mark, facing up the first corridor.
+   2. Wait for `"state": "READY"`.
+   3. The pilot arms in Altitude, then switches to Position.
+   4. The drone takes off and flies.
+   5. At `LOW_HOLD` ("PILOT: LAND NOW"), the pilot lands.
+6. **Afterwards:** `ros2 run dronehacks_pathplan report`. The journal is in
+   `~/team_ws/runs/pathplan-*/`.
+
+The stock drone has **no depth topic**, so the node flies the published map only. If you
+enable OAK depth, pass `depth_topic:=<topic>` and set `camera_offset_flu_m` to
+`CAMERA_X/Y/Z` from `drone.env`.
+
+The organisers' guide says nothing about takeoff under Offboard is proven on any airframe yet.
+Your first runs are that test:
+
+- **Props off first:** arm + Position must show `TAKEOFF` in the status, and the setpoints in
+  `/skybeta/setpoint/pose` must be sane.
+- **Then low and tethered.**
+- Record a bag every flight (`host/run.sh bag`).
+
+---
+
+## 6. How to know it works: four levels, cheapest first
+
+| Level | Command | Needs | What it proves | Our result |
+|---|---|---|---|---|
+| 1. logic | `python3 -m pytest -q tests` (in this folder) | Python + numpy + yaml | state machine, frames, ramps, heading limit, faults, planner; also on Python 3.10 / numpy 1.26 / no scipy (= the drone) | 152 passed (3.10: 146 + 1 skipped) |
+| 1b. closed loop | `python3 -m dronehacks_pathplan.dry_run` (+ `--no-depth`, `--dropout 30 1`, `--dropout 30 4`, `--carry 0.6 -0.3 25`, `--takeover 20`) | same | the mission + real planner fly the course through a model of `flight_interface` / PX4 / pilot | PASS: 5/5, landed ≤ 0.01 m from the pad, ~70 s, heading ≤ 0.25 rad/s, closest wall 0.37 m |
+| 2. ROS pipeline | `ros2 launch dronehacks_pathplan selftest.launch.py` (also `pilot:=direct depth:=false`) | built workspace, **no simulator** | real `flight_interface` + our node + sim pilot vs a fake PX4: topic versions, QoS, frames, the arm → Position → auto-Offboard handshake, LOW_HOLD → Land → DONE | PASS: 5/5, landed 0.00 m from the pad, ends by itself in ~95 s; also with a 0.6× slow sim clock |
+| 3. simulator | `check_pipeline`, then `sim.launch.py shadow:=true`, then `sim.launch.py` | FlyX lab | real cuVSLAM, real PX4, real depth, sim time | **your next step** |
+| 4. drone | section 5: props off, then tethered | the drone | everything | after 3 |
+
+Levels 1–2 take 2 minutes. **Run them after every change**, before spending lab GPU time.
+Don't run the self-test beside a simulator or on the drone: its fake PX4 would answer
+alongside the real one.
+
+---
+
+## 7. Parameters (launch arguments of the same name)
+
+| Argument | Default | Meaning |
+|---|---|---|
+| `shadow` | `false` | plan and log only |
+| `depth_topic` / `camera_info_topic` | `''` (sim.launch: `/camera/depth/image_raw`) | depth image; empty = published map only |
+| `camera_offset_flu_m` | `[0.115, 0.0, 0.029]` | depth camera in body FLU (Sky Beta CAD; on the drone `CAMERA_X/Y/Z`) |
+| `flight_altitude_m` | `0.9` | cruise height above the floor (walls 1.73 m) |
+| `carrot_m` | `0.5` | how far ahead the setpoint is. Pose setpoints are not speed-capped, so this sets the speed (~0.5 m/s). |
+| `yaw_rate_max` | `0.25` | rad/s heading limit. FlyX data: 30 of 40 VIO losses happened above 0.35 rad/s. |
+| `planner` | `theta` | `theta`, `astar`, or `static` (no sensing) |
+| `launch_xy_m`, `launch_heading_course_rad`, `launch_height_m` | `[-2.515, 0.914]`, `1.5708`, `0.05` | the launch mark in the course frame |
+| `frame_latch` | `arm` | `arm` or `slam_origin` (section 3) |
+| `max_flight_s` | `175.0` | run limit from takeoff (rule: 3 min) |
+| `min_altitude_m`, `max_altitude_m`, `max_speed_mps`, `auto_offboard_on_arm`, `allow_mode_request` | as Sky Beta | `flight_interface`'s own; `min_altitude_m` is shared with our node |
+| `use_sim_time` | `false` (sim.launch: `true`) | both nodes |
+| `planner_process` | `true` | planner in its own process (keeps the 20 Hz setpoint stream stall-free) |
+
+Mission constants (climb/descent rates, tolerances, freshness limits) are `MissionConfig` in
+`dronehacks_pathplan/mission.py`.
+
+---
+
+## 8. Troubleshooting
+
+| Symptom | Look at |
+|---|---|
+| Status stuck in `WAIT_HEALTH` | its `note` names the failed check (no odometry / no `/skybeta/state` / no PX4 position / not landed / another commander) |
+| Armed + Position, no takeoff | `flight_interface` log: `auto offboard: staying out of Offboard: <reason>`. "no team setpoint received" means our node was not READY (or `shadow`). |
+| Flies to the wrong place | `check_pipeline`: the `odom_enu vs local_enu` gap. If PX4's frame differs from cuVSLAM's, see Sky Beta `anchor_setpoints` / `odom_to_ned_yaw_offset_rad`. Also: was the drone on the mark facing +y when armed? |
+| Hangs at a corner | `report`: CLAMPED in the PX4 lines, planner `turn`/`stuck` events |
+| `FAULT: odometry lost` | cuVSLAM lost tracking (`/visual_slam/status`): too fast a turn, blank wall, bad light |
+| `offboard_control_signal_lost` in PX4 (sim) | stalls in `report`. If none, try `use_sim_time:=false` for the interface (the lab's PX4 time base). |
+| Lab: two vision bridges | `check_pipeline` FAIL on `/fmu/in/vehicle_visual_odometry`: run `sim.launch.py vision_bridge:=false` |
+
+---
+
+## 9. Offline tools (unchanged)
+
+- `python3 -m pathplan.harness --variants 4 --output runs/bench`: offline benchmark on 13
+  perturbed courses
+- `bash gzsim/run.sh`: the planner alone in Gazebo with ground-truth pose
+- `requirements.txt`: what a laptop venv needs (numpy, scipy, pyyaml, matplotlib, pytest)
+
+## 10. Not yet verified
+
+These need the lab, then the drone:
+
+- real cuVSLAM drift and tracking loss
+- real depth noise
+- the lab PX4's acceptance of `flight_interface`'s timestamps under sim time
+- whether PX4's local frame on the drone matches the vision frame (Sky Beta's own open caveat)
+- takeoff under Offboard on the real airframe
