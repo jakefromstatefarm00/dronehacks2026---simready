@@ -41,7 +41,43 @@ show PX4 in `ALTCTL` or `MANUAL` every time it was armed; it reached `POSCTL` on
 * Setpoints flow (v4c publishes `/skybeta/setpoint/pose` at 10-20 Hz; `clamped: ["min_altitude"]` as expected).
 * Camera on USB3 (`03e7:f63b`), Jetson disk 135 GB free, stack restarts cleanly.
 
-## So the fault is between the bridge and EKF2
+## ROOT CAUSE (measured live 2026-11-08 03:00, Pixhawk on, drone on the ground)
+
+```
+estimator_status_flags:  cs_ev_pos false  cs_ev_yaw false  cs_ev_hgt false   <- EKF2 fuses NO vision
+vehicle_local_position:  xy_valid false  dead_reckoning true  xy_reset_counter 11
+/fmu/in/vehicle_visual_odometry: pose_frame 2 (ok), quality 0, timestamp - timestamp_sample = 0.29 s (p50), 0.59 s max
+```
+
+Where the age comes from (4 s sample, each stage's header stamp vs the node clock):
+
+| stage | age |
+|---|---|
+| `/oak/imu/data` | 13 ms (fine) |
+| `/oak/left/camera_info` (= image stamp) | **273 ms** (259-285) |
+| `/visual_slam/tracking/odometry` | 295 ms (cuVSLAM adds ~2 ms) |
+| `/fmu/in/vehicle_visual_odometry` timestamp_sample | 290 ms (278-594) |
+
+The camera **images** are stamped ~270 ms before they reach ROS (8 frames at 30 fps: smells like a
+full 8-deep host queue in the depthai driver). The FC has `EKF2_EV_DELAY = 70` (organisers' bench
+value, confirmed in the ULog), `EKF2_DELAY_MAX = 200`. A sample 290 ms old lands outside EKF2's
+buffer and is dropped, so vision is never fused, so no local position, so no Position / Offboard,
+and PX4's position failsafe disarms on the ground.
+
+The organisers' own procedure (`~/skybeta/docs/fleet_guide.md` §7, `CLAUDE.md`, `host/run.sh`):
+**"EKF2_EV_DELAY = measured, not assumed"** — measure with `tools/latency_probe.py` on *this*
+airframe, set the value in QGC (range 0-300 ms), reboot the FC. Bench Orin: 70 ms; drone 16: 60 ms.
+This airframe: ~280-290 ms, a 4x outlier ("a drone that is an outlier here is telling you something").
+
+Two fixes, do both:
+1. **Now (QGC, organiser-sanctioned):** `EKF2_EV_DELAY` = measured p50 (~290; cap 300), reboot FC.
+   Check `cs_ev_pos` becomes true and `/skybeta/state local_enu` is non-null before arming.
+2. **Find the 200 ms:** `ev_latency_experiment.sh` compares the probe with the competitor window
+   running vs idle. If idle drops it to ~70 ms, our nodes (depth relay / v4c depth subscription)
+   starve the camera driver and we fix that on our side; if not, it is the camera driver / Jetson
+   and the organisers need to know.
+
+## Also checked (for completeness)
 
 EKF2 is receiving external vision but not using it (or rejecting it). Things to check live with the
 Pixhawk powered (ROS CLI inside `docker exec skybeta-stack bash -ic ...`):
