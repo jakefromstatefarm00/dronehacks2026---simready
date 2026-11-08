@@ -35,18 +35,28 @@ You don't need any program flags. `upload_to_flyx.py` already defaults to
 | Stamps | Gazebo sim time (same clock as /clock and PX4 SITL). Receive lag is about one sim frame (33 ms) |
 | Rate | 15 Hz requested. In practice about 3 Hz sim time, because the rig renders 6 cameras at about 0.5x real time. Rendering load does not change: the rig already subscribes the depth camera |
 
-`with_depth.py` starts a second `ros_gz_bridge` in the run's namespace:
-`/dronehacks/ideal_depth -> /camera/depth/image_raw` and
-`/dronehacks/camera_info -> /camera/depth/camera_info`. gz publishes the depth CameraInfo
-there, not on the SDF's `camera_info_topic`. Then it runs the program.
+In the run's namespace, `with_depth.py` starts (default `--depth-source relay`):
+
+* `image_transport republish` (C++), which republishes the rig's own `/camera/ideal_depth/image`
+  as `/camera/depth/image_raw`. The header (sim stamp) is kept, and Gazebo gets no second
+  subscriber.
+* a tiny `ros_gz_bridge` for `/dronehacks/camera_info -> /camera/depth/camera_info`.
+  gz publishes the depth CameraInfo there, not on the SDF's `camera_info_topic`.
+
+`--depth-source bridge` (v402-v419) bridges `/dronehacks/ideal_depth` a second time instead.
+Then the wrapper runs the program in its own session and forwards SIGINT/SIGTERM. Topic names
+come from the rig's `gazebo-topics.txt`, not from `gz topic -l`. The Ruby CLI's CPU burst
+lands exactly at the bootstrap-fixture drop.
 
 Differences from the lab: the lab uses 16UC1 mm with OAK-D stereo noise and holes. This
 depth is perfect and float. The planner decodes both encodings.
 
 ## Record and validate
 
-`with_depth.py` also records one [::4, ::4] frame per sim second to `<run>/depth/`
-(`depth-frames.npz`, `depth-info.json`, bridge and recorder logs). After
+With `--depth-record-period 1` (off by default: the recorder is a second 1 MB/frame
+subscriber), `with_depth.py` records one [::4, ::4] frame per sim second to `<run>/depth/`
+(`depth-frames.npz`, `depth-info.json`, recorder log). It starts 20 s after the program.
+The bridge config and log are always written there. After
 `sim/runtime/post_flight.sh NNN`, fetch the folder and the truth file:
 
 ```bash

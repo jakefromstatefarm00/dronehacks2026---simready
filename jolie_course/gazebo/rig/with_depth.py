@@ -11,11 +11,14 @@ The rig's world already renders an ideal depth camera on the airframe (``ideal_d
 depth_camera, 640x400, hfov 1.3962634 rad, 15 Hz, pose (0.11466, -0.00015, 0.02891) m in
 base_link FLU, no rotation; same pose as the rgb camera).  The rig bridges it to
 /camera/ideal_depth/image but not its CameraInfo (gz publishes that on /dronehacks/camera_info,
-not on the SDF's camera_info_topic).  This wrapper starts a second ros_gz_bridge in the same
-slot that maps
+not on the SDF's camera_info_topic).  In the same slot this wrapper starts
 
-    /dronehacks/ideal_depth   -> /camera/depth/image_raw     (32FC1, metres, +inf = no return)
-    /dronehacks/camera_info   -> /camera/depth/camera_info   (gz's own pinhole K)
+    image_transport republish  /camera/ideal_depth/image -> /camera/depth/image_raw
+                               (32FC1, metres, +inf = no return; header kept)
+    ros_gz_bridge  /dronehacks/camera_info -> /camera/depth/camera_info  (gz's own pinhole K)
+
+(--depth-source bridge instead bridges /dronehacks/ideal_depth directly, a second Gazebo
+subscriber; that was the first version, v402-v417.)
 
 Header stamps are Gazebo sim time, the clock PX4 SITL and the program's use_sim_time run on.
 Rendering load is unchanged (the rig already subscribes the depth camera).  Then it runs the
@@ -31,6 +34,8 @@ Wrapper options (all others go to the program):
     --depth-record DIR        where to record (default: <program --output>/../depth)
     --depth-record-period S   record one frame per S sim seconds (default 0 = no recorder)
     --depth-record-delay-s S  start the recorder S wall seconds after the program (default 20)
+    --depth-source relay|bridge  relay (default): republish the rig's /camera/ideal_depth/image;
+                              bridge: a second ros_gz_bridge subscriber on /dronehacks/ideal_depth
     --depth-probe-s S         no program: just bridge + record for S wall seconds, exit 0
 """
 from __future__ import annotations
@@ -46,6 +51,7 @@ from pathlib import Path
 
 DEPTH_GZ = "/dronehacks/ideal_depth"
 DEPTH_ROS = "/camera/depth/image_raw"
+RIG_DEPTH_ROS = "/camera/ideal_depth/image"     # the rig's own bridge of DEPTH_GZ
 INFO_ROS = "/camera/depth/camera_info"
 INFO_GZ_CANDIDATES = ("/dronehacks/ideal_depth/camera_info", "/dronehacks/camera_info")
 RIG = Path.home() / "dronehacks-2026-gb10"
@@ -57,7 +63,7 @@ def log(*a):
 
 def split_args(argv):
     own = {"--depth-record": None, "--depth-record-period": "0", "--depth-probe-s": None,
-           "--depth-record-delay-s": "20"}
+           "--depth-record-delay-s": "20", "--depth-source": "relay"}
     rest, i = [], 0
     while i < len(argv):
         if argv[i] in own and i + 1 < len(argv):
@@ -93,29 +99,44 @@ def gz_topics(run_dir):
     return set(f.read_text().split()) if f.exists() else set()
 
 
-def start_bridge(logdir, run_dir):
+def ros_exe(pkg, name):
+    """The binary itself, not "ros2 run" (killing that wrapper left the bridge orphaned)."""
+    return str(next((Path(p) / "lib" / pkg / name for p in
+                     os.environ.get("AMENT_PREFIX_PATH", "/opt/ros/jazzy").split(":")
+                     if (Path(p) / "lib" / pkg / name).exists()), Path("/opt/ros/jazzy/lib") / pkg / name))
+
+
+def start_bridge(logdir, run_dir, mode="relay"):
+    """relay (default): CameraInfo via a tiny bridge; the image is the rig's own
+    /camera/ideal_depth/image republished by image_transport (C++, header kept), so Gazebo
+    gets no second 1 MB/frame subscriber.  bridge: a second gz subscriber for the image too."""
     topics = gz_topics(run_dir)
     if topics and DEPTH_GZ not in topics:
         log(f"WARNING: {DEPTH_GZ} not in the rig's topic list; bridging it anyway")
     info_gz = next((t for t in INFO_GZ_CANDIDATES if t in topics), INFO_GZ_CANDIDATES[-1])
-    entries = [
+    entries = [] if mode == "relay" else [
         {"gz_topic_name": DEPTH_GZ, "ros_topic_name": DEPTH_ROS, "gz_type_name": "gz.msgs.Image",
-         "ros_type_name": "sensor_msgs/msg/Image", "direction": "GZ_TO_ROS"},
+         "ros_type_name": "sensor_msgs/msg/Image", "direction": "GZ_TO_ROS"}]
+    entries += [
         {"gz_topic_name": info_gz, "ros_topic_name": INFO_ROS, "gz_type_name": "gz.msgs.CameraInfo",
          "ros_type_name": "sensor_msgs/msg/CameraInfo", "direction": "GZ_TO_ROS"},
     ]
     cfg = Path(logdir) / "depth-bridge.yaml"
     cfg.write_text(json.dumps(entries, indent=2) + "\n")
-    log(f"bridging {DEPTH_GZ} -> {DEPTH_ROS}, {info_gz} -> {INFO_ROS}")
     handle = open(Path(logdir) / "depth-bridge.log", "wb")
-    # the binary itself, not "ros2 run" (killing that wrapper left the bridge orphaned)
-    exe = next((Path(p) / "lib/ros_gz_bridge/parameter_bridge" for p in
-                os.environ.get("AMENT_PREFIX_PATH", "/opt/ros/jazzy").split(":")
-                if (Path(p) / "lib/ros_gz_bridge/parameter_bridge").exists()),
-               Path("/opt/ros/jazzy/lib/ros_gz_bridge/parameter_bridge"))
-    return subprocess.Popen([str(exe), "--ros-args",
-                             "-r", "__node:=depth_bridge", "-p", f"config_file:={cfg}"],
-                            stdout=handle, stderr=subprocess.STDOUT)
+    procs = [subprocess.Popen([ros_exe("ros_gz_bridge", "parameter_bridge"), "--ros-args",
+                               "-r", "__node:=depth_bridge", "-p", f"config_file:={cfg}"],
+                              stdout=handle, stderr=subprocess.STDOUT)]
+    if mode == "relay":
+        log(f"relaying {RIG_DEPTH_ROS} -> {DEPTH_ROS}; bridging {info_gz} -> {INFO_ROS}")
+        procs.append(subprocess.Popen([ros_exe("image_transport", "republish"), "--ros-args",
+                                       "-r", "__node:=depth_relay", "-p", "in_transport:=raw",
+                                       "-p", "out_transport:=raw", "-p", "use_sim_time:=true",
+                                       "-r", f"in:={RIG_DEPTH_ROS}", "-r", f"out:={DEPTH_ROS}"],
+                                      stdout=handle, stderr=subprocess.STDOUT))
+    else:
+        log(f"bridging {DEPTH_GZ} -> {DEPTH_ROS}, {info_gz} -> {INFO_ROS}")
+    return procs
 
 
 # ------------------------------------------------------------------------------ recorder
@@ -213,7 +234,7 @@ def main(argv):
     record.mkdir(parents=True, exist_ok=True)
     period = float(own["--depth-record-period"])
 
-    children = [start_bridge(record, record.parent)]
+    children = start_bridge(record, record.parent, own["--depth-source"])
     if period > 0:          # opt-in: a second 1 MB/frame subscriber costs CPU the VIO may need
         rec_log = open(record / "depth-recorder.log", "wb")
         children.append(subprocess.Popen([sys.executable, "-u", str(Path(__file__).resolve()), "--_recorder",
