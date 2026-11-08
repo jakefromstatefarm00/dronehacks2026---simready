@@ -1,0 +1,98 @@
+[
+ {
+  "name": "fast",
+  "config": "s048",
+  "why": "fastest with completion >= base at every level: C0 51.8 s vs 77.5 s (-33%), C1 98% = base, L2 60% vs 58%",
+  "knobs": {
+   "carrot_m": 0.695,
+   "slow_turn_deg": 71.389,
+   "min_carrot_frac": 0.53,
+   "yaw_rate_max": 0.321,
+   "turn_in_place_deg": 76.939,
+   "lookahead_m": 1.184,
+   "commit_margin": 0.24,
+   "replan_every_m": 0.768,
+   "turn_step_deg": 25.291,
+   "tracking_margin": 0.083,
+   "soft_margin": 0.124,
+   "soft_weight": 6.164,
+   "wall_snap_m": 0.148,
+   "hit_confirm": 6,
+   "suspect_penalty": 9.919,
+   "max_turn_rate": 0.328,
+   "pad_centre_m": 0.092
+  }
+ },
+ {
+  "name": "safe",
+  "config": "s086",
+  "why": "completion >= base at every level with the most margin: clean C1 90% vs 82%, L2 72% vs 58%; ~3 s slower at C0",
+  "knobs": {
+   "carrot_m": 0.423,
+   "slow_turn_deg": 71.975,
+   "min_carrot_frac": 0.386,
+   "yaw_rate_max": 0.219,
+   "turn_in_place_deg": 70.817,
+   "lookahead_m": 0.977,
+   "commit_margin": 0.169,
+   "replan_every_m": 0.274,
+   "turn_step_deg": 19.491,
+   "tracking_margin": 0.043,
+   "soft_margin": 0.298,
+   "soft_weight": 9.415,
+   "wall_snap_m": 0.115,
+   "hit_confirm": 3,
+   "suspect_penalty": 6.528,
+   "max_turn_rate": 0.418,
+   "pad_centre_m": 0.067
+  }
+ },
+ {
+  "name": "balanced",
+  "config": "s048r3",
+  "why": "fastest at C0 (49.5 s) and best L1/L2 (100%/72%), but C1 92% vs base 98% (2 more failures in 40)",
+  "knobs": {
+   "carrot_m": 0.69,
+   "slow_turn_deg": 68.431,
+   "min_carrot_frac": 0.519,
+   "yaw_rate_max": 0.292,
+   "turn_in_place_deg": 86.167,
+   "lookahead_m": 1.132,
+   "commit_margin": 0.238,
+   "replan_every_m": 0.697,
+   "turn_step_deg": 23.638,
+   "tracking_margin": 0.068,
+   "soft_margin": 0.162,
+   "soft_weight": 5.998,
+   "wall_snap_m": 0.177,
+   "hit_confirm": 6,
+   "suspect_penalty": 8.752,
+   "max_turn_rate": 0.308,
+   "pad_centre_m": 0.085
+  }
+ },
+ {
+  "name": "clearance",
+  "config": "s029r2",
+  "why": "widest clearance (C0 p5 0.411 m, min 0.392 m), best on the hardest level C2 (35% vs 20%); C1 92% vs 98%",
+  "knobs": {
+   "carrot_m": 0.423,
+   "slow_turn_deg": 116.395,
+   "min_carrot_frac": 0.599,
+   "yaw_rate_max": 0.21,
+   "turn_in_place_deg": 92.098,
+   "lookahead_m": 1.173,
+   "commit_margin": 0.179,
+   "replan_every_m": 0.789,
+   "turn_step_deg": 21.392,
+   "tracking_margin": 0.046,
+   "soft_margin": 0.3,
+   "soft_weight": 4.682,
+   "wall_snap_m": 0.212,
+   "hit_confirm": 6,
+   "suspect_penalty": 5.626,
+   "max_turn_rate": 0.574,
+   "pad_centre_m": 0.114
+  }
+ }
+]

@@ -63,7 +63,7 @@ def main(argv=None):
     if a.kind == "final":
         names = [("base", "base (proven)")]
         if a.names:
-            names += [(c["id"], c["name"]) for c in json.loads(a.names.read_text())]
+            names += [(c.get("config", c.get("id")), f"{c['name']} ({c.get('config', '')})") for c in json.loads(a.names.read_text())]
         else:
             names += [(c, c) for c in sorted({c for c, _ in s} - {"base"})]
         print(final_table(s, names))

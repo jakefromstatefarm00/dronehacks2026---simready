@@ -38,7 +38,17 @@ exactly the code that was simulated.
 | L3 heavy | ±15 cm | 1-3 | 0.5-1.2 / 0.8-1.1 / 2-4 | 0.005-0.02 | 0.8/s, 5 % ≤2.5 s | 1 per 12 s, 0.3-2 s | 2 |
 | L4 severe | ±20 cm | 2-4 (larger) | 0.6-1.4 / 0.75-1.15 / 3-5 | 0.01-0.03 | 1/s, 8 % ≤3 s | 1 per 8 s, 0.3-2.5 s | 3 |
 
-The failure map (`failmap.py`) starts from L0 and raises **one** axis at a time.
+Calibrated levels (from `dynamics_calibrated.yaml`, branch dynamics-calib 4964e62, 15 PX4 ulogs). They use the
+**yaw-rate x speed** VIO hazard (divergence only when yawing faster than 0.35 rad/s while moving):
+
+| Level | World | Dynamics | Timing |
+|---|---|---|---|
+| C0 | published | fitted point values: Kp 0.952, tau 0.83, vel_i 0.66, delay 0, k_yaw 4.04; Gazebo jitter 0.6 mm | none |
+| C1 | ±5 cm, 0-1 pole | calibrated ranges, measured drift (≤0.027 m/√m), delay 0-3 | FlyX stalls and pauses |
+| C2 | ±10 cm, 1-2 poles | the YAML's full ranges (2x drift margin, up to 0.054 m/√m; delay 0-6) | FlyX stalls and pauses |
+| C3 | ±15 cm, 1-3 poles | full ranges | heavier stalls and pauses |
+
+The failure map (`failmap.py`) starts from C0 and raises **one** axis at a time.
 
 ## Knob ranges (why)
 
@@ -63,7 +73,7 @@ The failure map (`failmap.py`) starts from L0 and raises **one** axis at a time.
 
 ## Running
 
-On GB10, under `~/dronehacks-2026-gb10/sweep-jolie/`, with at most 12 workers under `nice -n 10`:
+On GB10, under `~/dronehacks-2026-gb10/sweep-jolie/`. Use at most 6 workers under `nice -n 19` while Gazebo flights share the machine:
 
 ```
 cd sweep
@@ -71,7 +81,7 @@ nice -n 10 python3 run_sweep.py calib   --seeds 24 --out results/calib      # ba
 nice -n 10 python3 run_sweep.py coarse  --n 160 --levels L0 L2 L3 --seeds 6 --out results/coarse
 python3 select_configs.py results/coarse/runs.csv --configs results/coarse/configs.json --refine 12 --per 8 --out results/refine_configs.json
 nice -n 10 python3 run_sweep.py configs --configs results/refine_configs.json --levels L0 L2 L3 --seeds 12 --out results/refine
-nice -n 10 python3 run_sweep.py configs --configs results/finalists.json --levels L0 L1 L2 L3 L4 --seeds 50 --out results/final
+nice -n 19 python3 run_sweep.py configs --configs results/finalists.json --levels C0 C1 C2 L1 L2 --seeds 40 --workers 6 --out results/final
 nice -n 10 python3 run_sweep.py failmap --seeds 30 --out results/failmap
 python3 analyze.py results/final/runs.csv
 python3 sim.py --level L2 --seed 3 --knob carrot_m .6          # one run, JSON out

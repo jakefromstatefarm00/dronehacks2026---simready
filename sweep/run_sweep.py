@@ -144,6 +144,7 @@ def main(argv=None):
     ap.add_argument("--workers", type=int, default=12)
     ap.add_argument("--out", type=Path, required=True)
     ap.add_argument("--cache", type=Path, default=HERE / "cache")
+    ap.add_argument("--axes", default="", help="failmap: only axes whose name matches this regex")
     a = ap.parse_args(argv)
     a.out.mkdir(parents=True, exist_ok=True)
     seeds = range(a.seed0, a.seed0 + a.seeds)
@@ -157,6 +158,9 @@ def main(argv=None):
         import failmap
         configs = json.loads(a.configs.read_text()) if a.configs else [{"id": "base", "knobs": {}}]
         axes = failmap.AXES if a.mode == "failmap" else failmap.CALIB
+        if a.axes:
+            import re
+            axes = [ov for ov in axes if re.search(a.axes, ov["name"])]
         tasks = [(c["id"], c["knobs"], ov["name"], s, (ov.get("base", "L0"), {k: v for k, v in ov.items() if k != "base"}))
                  for s in seeds for ov in axes for c in configs]
     (a.out / "configs.json").write_text(json.dumps(configs, indent=1))
