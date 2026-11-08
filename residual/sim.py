@@ -152,6 +152,8 @@ class Level:
     depth_noise: float = 0.0           # stereo depth noise, sigma = k * z^2
     drift_per_m: float = 0.0           # systematic VIO drift: up to this many m per m flown (random direction)
     yaw_drift_per_m: float = 0.0       # and up to this heading drift, rad per m flown (random sign)
+    dyn_yaml: str = ""                 # dynamics ranges from this YAML (DynamicsRanges.from_dict) instead
+    vio_model: str = "yaw"             # yaw: hazard(yaw rate, in-place); corner: calibrated divergence model
     stall_rate: float = 0.0            # program stalls per second
     stall_max: float = 0.0
     odom_pause_rate: float = 0.0
@@ -181,7 +183,31 @@ DRIFT_LEVELS = [
           stall_rate=.2, stall_max=1.2, odom_pause_rate=.05, slow_silence_rate=.02,
           drift_per_m=.08, yaw_drift_per_m=math.radians(.5), description="L4 + the D1 drift"),
 ]
-LEVEL = {lv.name: lv for lv in LEVELS + DRIFT_LEVELS}
+# Calibrated levels (evaluation): dynamics-calib's ranges fitted to 15 real PX4 ulogs, FlyX lab
+# starvation, and its VIO finding -- divergence where yaw rate x speed is high at the first
+# corridor-to-maze corner, the estimate then drifting smoothly at 0.09-0.13 m/s with PX4 following.
+CALIB_YAML = str(REPO / "residual" / "config" / "dynamics_calibrated.yaml")
+CALIB_LEVELS = [
+    Level("C0", dyn_yaml=CALIB_YAML, vio_model="corner", vio_scale=1.0, launch_error=.015, depth_noise=.01,
+          stall_rate=.2, stall_max=1.2, odom_pause_rate=.05, slow_silence_rate=.02,
+          description="published course, calibrated dynamics YAML (dynamics-calib 4964e62), lab starvation as L4, corner VIO divergence"),
+    Level("C1", "mixed", .15, dyn_yaml=CALIB_YAML, vio_model="corner", vio_scale=1.0, launch_error=.015, depth_noise=.01,
+          stall_rate=.2, stall_max=1.2, odom_pause_rate=.05, slow_silence_rate=.02,
+          description="C0 on the L2 course perturbations (walls <= 15 cm + posts)"),
+]
+LEVEL = {lv.name: lv for lv in LEVELS + DRIFT_LEVELS + CALIB_LEVELS}
+VIO_CORNER_XY = np.array([-2.35, 2.5])      # first corridor-to-maze 90 deg corner (~18-20 s in)
+
+
+def corner_hazard(xy, yaw_rate, speed):
+    """Per-second divergence probability (dynamics-calib): rises with |yaw rate| x speed, mostly at
+    the first corridor-to-maze corner. Gazebo: 5 starts in 4/15 runs at 0.19-0.42 rad m/s^2;
+    turning in place (speed ~0) at 1.14 rad/s did not diverge."""
+    x = abs(yaw_rate) * speed - .12
+    if x <= 0:
+        return 0.0
+    near = np.linalg.norm(np.asarray(xy) - VIO_CORNER_XY) < 1.0
+    return 1.5 * x * (1.0 if near else .15)
 
 
 # Calibrated to Jolie's completed FlyX run (lab wall clock, sim ~0.8x real time): NAVIGATE 120.85 s wall
@@ -193,6 +219,9 @@ NOMINAL_PX4 = dict(kp_xy=.7, tau=.5, kp_z=.35)
 def dynamics_ranges(level):
     dyn = dynamics_module()
     nominal = dyn.DynamicsRanges.nominal()
+    if level.dyn_yaml:
+        import yaml
+        return dyn.DynamicsRanges.from_dict(yaml.safe_load(Path(level.dyn_yaml).read_text()))
     if level.full_dynamics:
         # every dynamics.py range (incl. its full estimator ranges), PX4 gains/lag around the calibrated
         # nominal (velocity lag 0.35-1.0 s as measured in the real runs)
@@ -521,6 +550,7 @@ def run_episode(level, seed, policy_params=None, residual=False, record=False, m
     drift_rate = rng.uniform(0, level.drift_per_m)
     yaw_drift = rng.uniform(-level.yaw_drift_per_m, level.yaw_drift_per_m)
     align_total = np.zeros(2)
+    diverge_until, diverge_vel = -1.0, np.zeros(3)
 
     carrot = .5
     build = b._build_planner_embedded
@@ -630,7 +660,17 @@ def run_episode(level, seed, policy_params=None, residual=False, record=False, m
             px4._blip = px4.failsafe
             # ------------------------------------------------ visual odometry
             speed = float(np.linalg.norm(sim.v[:2]))
-            if sim.p[2] > .3:
+            if sim.p[2] > .3 and level.vio_model == "corner":
+                h = corner_hazard(sim.p[:2], sim.yaw_rate, speed)
+                res.vio_risk += h * DTS
+                if level.vio_scale and t >= diverge_until and rng_ev.random() < h * level.vio_scale * DTS:
+                    res.vio_events += 1
+                    ang = rng_ev.uniform(0, 2 * math.pi)
+                    diverge_vel = rng_ev.uniform(.09, .13) * np.array([math.cos(ang), math.sin(ang), 0.0])
+                    diverge_until = t + float(rng_ev.uniform(2.0, 6.0))
+            if t < diverge_until:
+                sim.bias += diverge_vel * DTS          # the estimate slides; PX4 follows it
+            if sim.p[2] > .3 and level.vio_model == "yaw":
                 h = vio_hazard(sim.yaw_rate, speed)
                 res.vio_risk += h * DTS
                 if level.vio_scale and t >= vio_loss_until and rng_ev.random() < h * level.vio_scale * DTS:
