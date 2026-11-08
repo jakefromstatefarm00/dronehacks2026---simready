@@ -108,6 +108,32 @@ def test_no_mapping_or_planning_during_takeoff_by_default():
         assert m.planning_allowed()
 
 
+def test_planner_process_configure_passes_options_like_fly_pathplan():
+    """Gazebo v926: fly_pathplan passes a 6th element (planner options) and configure() refused it
+    (TypeError at start-up). The message must be the 5-tuple without options, the 6-tuple with."""
+    from pathplan.planner_process import PlannerProcess
+
+    class Conn:
+        def __init__(self):
+            self.sent = []
+
+        def send(self, m):
+            self.sent.append(m)
+
+        def recv(self):
+            return "ready", [0.0, 0.0]
+    for options, n in ((None, 5), ({"view_m": True}, 6)):
+        p = object.__new__(PlannerProcess)
+        p.conn = Conn()
+        p.configure("theta", .9, (.115, 0.0, .029), 0.0, .5, options)
+        assert len(p.conn.sent[0]) == n and p.pad_xy == [0.0, 0.0]
+    # and the exact call fly_pathplan.main() makes
+    import inspect
+    import flyx.fly_pathplan as fp
+    src = inspect.getsource(fp.main)
+    assert "a.carrot, planner_options(a)))" in src
+
+
 def test_v5_options_default_on_and_known():
     from pathplan.planner_process import V5_OPTIONS
     assert set(V5_OPTIONS) == {"plan_cache", "look_guard", "corner_view", "forget_votes", "forget_snap",

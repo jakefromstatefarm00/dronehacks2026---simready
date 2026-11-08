@@ -316,9 +316,11 @@ class PlannerProcess:
         if config is not None:
             self.configure(*config)
 
-    def configure(self, planner_name, altitude, camera_offset, pitch_down_deg, carrot_m):
-        """Build the planner in the child (a few seconds); sets ``pad_xy``."""
-        self.conn.send((planner_name, altitude, tuple(camera_offset), pitch_down_deg, carrot_m))
+    def configure(self, planner_name, altitude, camera_offset, pitch_down_deg, carrot_m, options=None):
+        """Build the planner in the child (a few seconds); sets ``pad_xy``. ``options``: [v5] overrides of
+        V5_OPTIONS (None = the original 5-tuple message, i.e. the defaults)."""
+        msg = (planner_name, altitude, tuple(camera_offset), pitch_down_deg, carrot_m)
+        self.conn.send(msg + ((dict(options),) if options else ()))
         ready, self.pad_xy = self.conn.recv()
         if ready != "ready":
             raise RuntimeError("planner process did not start")
