@@ -4,6 +4,7 @@
 #   fly hard      hardcoded 0.9 m route through the checkpoints   (upload_to_flyx_v4c_skybeta_hard.py)
 #   fly best      Jolie's planner v4c, FlyX 5/5                   (upload_to_flyx_v4c_skybeta.py)
 #   fly record    RC recording day: path_recorder, no autonomy at all
+#   fly play      replay the latest recorded RC path (path_player, teammate package)
 #   fly status    what is configured, what is running, armed or not
 #
 # hard / best:  refuses if armed -> swaps the stack's competitor window to that program NOW (live,
@@ -26,7 +27,7 @@ say() { echo "[fly] $*"; }
 in_c() { docker exec "$C" bash -ic "$*" 2>/dev/null; }
 state() { in_c "timeout -s KILL 8 ros2 topic echo --once /skybeta/state" | head -1; }
 set_env() {  # set_env PKG LAUNCH
-  sudo -v || { say "need sudo for /etc/skybeta/drone.env"; exit 1; }
+  sudo -n true 2>/dev/null || sudo -v || { say "need sudo for /etc/skybeta/drone.env"; exit 1; }
   sudo cp -p /etc/skybeta/drone.env "/etc/skybeta/drone.env.before-fly-$(date +%Y%m%d-%H%M%S)"
   sudo sed -i "s/^COMPETITOR_PKG=.*/COMPETITOR_PKG=$1/; s/^COMPETITOR_LAUNCH=.*/COMPETITOR_LAUNCH=$2/" /etc/skybeta/drone.env
 }
@@ -36,14 +37,14 @@ respawn() {  # respawn "<ros2 launch ...>"
 }
 status() {
   echo "configured (next boot): $(grep -h ^COMPETITOR_PKG /etc/skybeta/drone.env | cut -d= -f2) / $(cat "$CHOICE" 2>/dev/null || echo "$HARD (default)")"
-  echo "running now:            $(docker exec "$C" bash -c "ps -eo args | grep -oE '(upload_to_flyx[^ ]*\.py( --shadow)?|path_recorder/recorder|lib/path_recorder/recorder)' | head -1" 2>/dev/null || echo "stack not running")"
+  echo "running now:            $(docker exec "$C" bash -c "ps -eo args | grep -oE '(upload_to_flyx[^ ]*\.py( --shadow)?|lib/path_recorder/recorder|lib/path_player/player)' | sed 's#.*/lib/##' | head -1" 2>/dev/null || echo "stack not running")"
   s=$(state); echo "px4/arm:                $(echo "$s" | grep -oE '"(px4_link|armed|landed|nav_state_name|local_enu)": [^,]*' | tr '\n' ' ')"
   j=$(in_c "timeout -s KILL 6 ros2 topic echo --once /jolie_flyx/status" | head -1 | grep -oE '"state": "[A-Z_]+"'); [ -n "$j" ] && echo "program state:          $j"
 }
 
 docker ps --format '{{.Names}}' | grep -qx "$C" || { say "stack container $C is not running (sudo systemctl restart skybeta-stack)"; exit 1; }
 case "${1:-}" in
-  hard|best|record) ;;
+  hard|best|record|play) ;;
   status) status; exit 0 ;;
   *) sed -n '2,20p' "$0"; exit 2 ;;
 esac
@@ -74,6 +75,15 @@ case "$1" in
     set_env path_recorder path_recorder.launch.py
     respawn "ros2 launch path_recorder path_recorder.launch.py"
     sleep 8
+    ;;
+  play)
+    [ -d "$PKG_DIR/install/path_player" ] || { say "REFUSE: path_player is not built (colcon build --packages-select path_player inside the stack)"; exit 1; }
+    say "program: path_player (replays the latest recording in ~/team_ws/runs/paths; LIVE)"
+    set_env path_player path_player.launch.py
+    respawn "ros2 launch path_player path_player.launch.py"
+    say "waiting for it to come up"
+    for i in $(seq 1 20); do sleep 2; docker exec "$C" bash -c "ps -eo args | grep -q 'lib/path_player/player'" && break; done
+    docker exec "$C" bash -c "ps -eo args | grep -q 'lib/path_player/player'" || { say "FAIL: path_player did not start"; exit 1; }
     ;;
 esac
 say "configured for this session and the next boot"
