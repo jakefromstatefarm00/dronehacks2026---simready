@@ -84,45 +84,89 @@ def skybeta_copy(native_text, out, doc_note):
     b.build()
 
 
-def safe_native(native):
-    s = native
-    # 1) align_to_map inside the embedded depth_projection source: robust weights + stricter evidence
-    s = _one(s, '''    shift = np.zeros(2)
-    rms0 = None
+# The safeguard chosen from the A/B (README.md): Jolie's align_to_map kept verbatim as _align_plain,
+# then a Tukey-robust refinement started from its answer must agree (move < CONSENSUS_M) or the frame
+# is refused. Same as jolie_course/drift/align_safe.make_safe_align({"consensus": CONSENSUS_M}).
+SAFE = dict(CONSENSUS_M=.03, ROBUST_C=.08, ALIGN_MEDIAN=1, ALIGN_GAIN=.6, ALIGN_MAX_M=1.5)
+
+CONSENSUS_BLOCK = """
+
+
+# ---------------------------------------------------------------- SAFE (drift-eval, jolie_course/drift)
+# Jolie's fit above follows any frame that improves the rms; with noisy stereo (sigma ~ z^2) single
+# frames gave 5-15 cm false shifts that walked the frame off the map (offline A/B: 0 cm/m drift, bad
+# depth -> 0 % completion). A frame now counts only if a Tukey-robust refit, started from her answer,
+# agrees with it: noise, outliers and clutter make the two disagree. Clean frames are unchanged.
+CONSENSUS_M = {CONSENSUS_M!r}      # m: robust refit must move less than this
+ROBUST_C = {ROBUST_C!r}         # m: Tukey width of the refit
+
+_align_plain = align_to_map
+
+
+def _align_robust(pts, dist, grad, spec, *, near=.35, min_points=40, iterations=5):
+    pts = np.asarray(pts, float)
+    pts = pts[np.abs(_bilinear(dist, spec, pts)) < near]
+    shift = np.zeros(2)
+    if len(pts) < min_points:
+        return shift
     for _ in range(iterations):
         d = _bilinear(dist, spec, pts + shift)
         g = _bilinear(grad, spec, pts + shift)
-        rms = float(np.sqrt(np.mean(d ** 2)))
-        rms0 = rms if rms0 is None else rms0
-        H = g.T @ g
-        b = g.T @ d
-        w, v = np.linalg.eigh(H)''', '''    shift = np.zeros(2)
-    rms0 = None
-    for _ in range(iterations):
-        d = _bilinear(dist, spec, pts + shift)
-        g = _bilinear(grad, spec, pts + shift)
-        rms = float(np.sqrt(np.mean(d ** 2)))
-        rms0 = rms if rms0 is None else rms0
-        # SAFE: Tukey weights (c = ROBUST_C): hits far from the consensus (an unmapped obstacle by a
-        # wall, one wall that moved) stop pulling the frame (drift-eval A/B, jolie_course/drift)
         wt = (1 - np.clip(np.abs(d) / ROBUST_C, 0, 1) ** 2) ** 2
         H = (g * wt[:, None]).T @ g
         b = (g * wt[:, None]).T @ d
-        w, v = np.linalg.eigh(H)''', "safe align weights")
-    s = _one(s, '''            if lam > max(10.0, .02 * len(pts)):''',
-             '''            if lam > max(MIN_EVIDENCE, .02 * float(wt.sum())):''', "safe evidence threshold")
-    s = _one(s, '''def align_to_map(points, dist, grad, spec, *, near=.35, min_points=40, iterations=5):''',
-             '''ROBUST_C = .08          # SAFE: Tukey width, m
-MIN_EVIDENCE = 30.0     # SAFE: per-direction wall evidence (Jolie: 10)
+        w, v = np.linalg.eigh(H)
+        step = np.zeros(2)
+        for lam, vec in zip(w, v.T):
+            if lam > max(10.0, .02 * float(wt.sum())):
+                step -= (vec @ b) / lam * vec
+        n = float(np.linalg.norm(step))
+        if n > .1:
+            step *= .1 / n
+        shift += step
+        if n < .002:
+            break
+    return shift
 
 
-def align_to_map(points, dist, grad, spec, *, near=.35, min_points=40, iterations=5):''', "safe constants")
-    # 2) fly_pathplan: smaller gain, lower cap
-    s = _one(s, "ALIGN_MAX_M = 1.5\n", "ALIGN_MAX_M = .6                  # SAFE (drift-eval): was 1.5\nALIGN_GAIN = .3                   # SAFE (drift-eval): was 0.6\n", "safe cap")
-    s = _one(s, "            step = .6 * np.asarray(shift, float)\n", "            step = ALIGN_GAIN * np.asarray(shift, float)\n", "safe gain")
+def align_to_map(points, dist, grad, spec, **kw):
+    s0, info = _align_plain(points, dist, grad, spec, **kw)
+    if s0 is None:
+        return None, info
+    s1 = _align_robust(np.asarray(points, float) + s0, dist, grad, spec, **kw)
+    info["refit_m"] = round(float(np.linalg.norm(s1)), 4)
+    if float(np.linalg.norm(s1)) > CONSENSUS_M:
+        return None, info
+    return s0 + s1, info
+"""
+
+
+def safe_native(native, p=SAFE):
+    s = native
+    # 1) after Jolie's align_to_map (end of the embedded depth_projection source): the consensus gate
+    anchor = """    if not np.any(shift) or rms1 > rms0 - .003 or np.linalg.norm(shift) > .3:
+        return None, info
+    return shift, info
+"""
+    s = _one(s, anchor, anchor + CONSENSUS_BLOCK.format(**p), "safe consensus block")
+    # 2) fly_pathplan.apply_alignment: gain, cap, optional median of consecutive shifts
+    s = _one(s, "ALIGN_MAX_M = 1.5\n",
+             f"ALIGN_MAX_M = {p['ALIGN_MAX_M']!r}                 # SAFE (drift-eval); Jolie 1.5\n"
+             f"ALIGN_GAIN = {p['ALIGN_GAIN']!r}                  # SAFE (drift-eval); Jolie 0.6\n"
+             f"ALIGN_MEDIAN = {p['ALIGN_MEDIAN']!r}                  # SAFE (drift-eval): median of the last N shifts (1 = off)\n",
+             "safe cap")
+    s = _one(s, """            step = .6 * np.asarray(shift, float)
+""", """            if ALIGN_MEDIAN > 1:          # SAFE (drift-eval): consecutive frames must agree
+                self.align_recent = (getattr(self, "align_recent", []) + [np.asarray(shift, float)])[-ALIGN_MEDIAN:]
+                if len(self.align_recent) < ALIGN_MEDIAN:
+                    return
+                shift = np.median(np.asarray(self.align_recent), axis=0)
+            step = ALIGN_GAIN * np.asarray(shift, float)
+""", "safe gain + median")
+    desc = ", ".join(f"{k}={v}" for k, v in p.items())
     s = _one(s, "Generated by pathfinding/tools/build_single_file.py from flyx/fly_pathplan.py (commit f7b97d3)\n",
              "Generated by pathfinding/tools/build_single_file.py from flyx/fly_pathplan.py (commit f7b97d3),\n"
-             "then SAFEGUARDED by jolie_course/drift/build_drift_files.py (robust align_to_map, gain 0.3, cap 0.6 m)\n", "safe stamp")
+             f"then SAFEGUARDED by jolie_course/drift/build_drift_files.py ({desc})\n", "safe stamp")
     compile(s, "upload_to_flyx_drift_safe.py", "exec")
     return s
 
