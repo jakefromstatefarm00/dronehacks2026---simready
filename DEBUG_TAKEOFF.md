@@ -107,6 +107,20 @@ Experiment (`jetson/ev_latency_experiment.sh`, 03:21): driver leg 206 ms with th
 running **and** idle -> our nodes are not the cause; it is the camera driver / Jetson (organisers'
 bench: 36 ms). Told to the organisers as an outlier airframe.
 
+### Two more facts from the RC-session logs (`drone_logs/jetson_2026-11-08/runs/rc-*`)
+
+* **02:45 PST: cuVSLAM had diverged to odom (-44, -38, +35) m** while the drone sat on the ground
+  (`rc-20261108-024458/notes.txt`, 11 USB reset/disconnect lines in `usb.log`). After a camera USB
+  flap the odometry is garbage until the stack is restarted; EKF2 will (rightly) not fuse it, and if it
+  did the drone would fly off. Another reason the preflight insists on `vo_state 1` *and* a sane
+  `odom_enu` near the origin.
+* **02:48 PST (uptime 0 min): camera still `03e7:2485` on Bus 001** (unbooted/USB2) when the session
+  started -- the camera takes a while to boot and can come up on the wrong bus.
+* The clean measurement (36 ms) was 26 min after boot; the 206-290 ms ones were 2-9 min after boot or
+  right after a stack restart. "Bimodal per boot" and "high for the first minutes while the Jetson is busy"
+  are both consistent with the data; either way: **measure before arming, and if it is high, wait or
+  restart the stack and measure again.**
+
 ## Also checked (for completeness)
 
 EKF2 is receiving external vision but not using it (or rejecting it). Things to check live with the
