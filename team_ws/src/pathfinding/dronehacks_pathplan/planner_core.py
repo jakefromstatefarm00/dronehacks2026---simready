@@ -169,7 +169,7 @@ def _child(conn, kwargs):
     signal.signal(signal.SIGINT, signal.SIG_IGN)        # the ROS process handles Ctrl-C
     try:
         os.nice(10)                                      # below the setpoint stream (FlyX run 6)
-    except OSError:
+    except (OSError, AttributeError):                    # AttributeError: no os.nice (Windows tests)
         pass
     core = PlannerCore(**kwargs)
     conn.send(("ready", core.pad_xy, len(core.planner.checkpoints)))
@@ -188,16 +188,32 @@ def _child(conn, kwargs):
 class PlannerProcess(_FrameSlot):
     """PlannerCore in its own process ('spawn': safe to start after rclpy threads exist)."""
 
-    def __init__(self, **kwargs):
+    def __init__(self, start_timeout_s=120.0, **kwargs):
         import multiprocessing as mp
         super().__init__()
+        self.start_timeout_s = float(start_timeout_s)
         ctx = mp.get_context("spawn")
         self.conn, child = ctx.Pipe()
         self.proc = ctx.Process(target=_child, args=(child, kwargs), daemon=True)
         self.proc.start()
-        self._ready(self.conn.recv())
+        # Drop our copy of the child's end: with it open, a child that dies before "ready" left
+        # recv() waiting forever; now its death reads as EOF here.
+        child.close()
+        try:
+            self._ready(self._recv(self.start_timeout_s))
+        except (EOFError, OSError, TimeoutError) as e:
+            self.proc.kill()
+            self.proc.join(2.0)
+            raise RuntimeError(f"planner process did not start ({type(e).__name__}: {e}; "
+                               f"exit code {self.proc.exitcode})") from e
         self.events, self.cleared, self.ms, self.depth_quality = [], [], 0.0, {}
         self.call_lock = threading.Lock()
+        self.alive = True
+
+    def _recv(self, timeout_s):
+        if not self.conn.poll(timeout_s):
+            raise TimeoutError(f"no answer from the planner process in {timeout_s:.0f} s")
+        return self.conn.recv()
 
     def _ready(self, msg):
         if msg[0] != "ready":
@@ -212,20 +228,29 @@ class PlannerProcess(_FrameSlot):
         """One planning step. Blocks the calling (planning) thread only; the pipe wait frees the GIL."""
         frame = self.take()
         try:
+            if not self.alive:                      # died, or a reset timed out (the pipe is out of step)
+                raise EOFError("planner process stopped")
             with self.call_lock:
                 self.conn.send(("update", [float(v) for v in xy], float(yaw), frame))
                 cmd, self.events, self.cleared, self.ms, self.depth_quality = self.conn.recv()
             return cmd
         except (EOFError, OSError, BrokenPipeError):
             from pathplan.online import Command
+            self.alive = False
             self.events = self.events + [{"event": "planner process stopped"}]
             return Command("failed", reason="planner process stopped")
 
     def reset(self):
-        with self.call_lock:
-            self.conn.send(("reset",))
-            self._ready(self.conn.recv())
-        self.events, self.cleared = [], []
+        """A fresh planner for the next flight. After the process died this no longer raises
+        (it raised BrokenPipeError on the planning thread): the next update() reports 'failed'."""
+        try:
+            with self.call_lock:
+                self.conn.send(("reset",))
+                self._ready(self._recv(self.start_timeout_s))
+            self.events, self.cleared = [], []
+        except (EOFError, OSError, TimeoutError):          # BrokenPipeError is an OSError
+            self.alive = False
+            self.events, self.cleared = [{"event": "planner process stopped"}], []
         self.take()
 
     def close(self):

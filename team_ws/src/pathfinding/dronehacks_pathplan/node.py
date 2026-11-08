@@ -12,13 +12,19 @@ the safety envelope and the switch into Offboard (when the pilot arms, then sele
 The state machine is ``mission.py``; this file only moves messages in and out, keeps a journal,
 and runs the planner in its own process (``planner_core.py``).
 
-Threads: odometry/state callbacks (fast, just store), depth callback (decodes nothing: hands the
-frame to the planner process), planning timer 5 Hz, control timer 20 Hz on a STEADY clock (a
-stalled /clock or slow sim time must never stop the setpoint stream). Freshness is judged on a
-monotonic clock; the ROS clock (sim time in a simulator) only times the 3-minute run limit.
+Threads (the structure of the FlyX-proven flyx/fly_pathplan.py): ONE SingleThreadedExecutor runs
+every ROS callback, all short -- odometry/state (just store), depth (decodes nothing: hands the
+frame to the planner process), control 20 Hz and graph 1 Hz timers on a STEADY clock (a stalled
+/clock or slow sim time must never stop the setpoint stream). Planning, which waits on the planner
+process for up to ~1 s, runs on its own thread (runtime.PlanningLoop, 5 Hz), never on the
+executor; the journal is written by its own thread from a queue (runtime.Journal). The
+MultiThreadedExecutor used ~73 % of a core against ~13 % for the single-threaded one, and a
+CPU-hungry process is the one a crowded lab machine starves (FlyX run 7: 86 stalls up to 1.95 s).
+Freshness is judged on a monotonic clock; the ROS clock (sim time in a simulator) only times the
+3-minute run limit.
 
-Journal: <team_ws>/runs/pathplan-<time>/journal.jsonl (or ~/dronehacks_runs/...). Summarise
-with ``ros2 run dronehacks_pathplan report`` (or python3 -m dronehacks_pathplan.report).
+Journal: <journal_dir or team_ws/runs>/pathplan-<time>/journal.jsonl, else ~/flyx-runs/...,
+else /tmp/flyx-runs/... Summarise with ``ros2 run dronehacks_pathplan report``.
 """
 from __future__ import annotations
 
@@ -32,9 +38,8 @@ import time
 
 import rclpy
 from rcl_interfaces.msg import ParameterDescriptor
-from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
 from rclpy.clock import Clock, ClockType
-from rclpy.executors import ExternalShutdownException, MultiThreadedExecutor
+from rclpy.executors import ExternalShutdownException, SingleThreadedExecutor
 from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
 
@@ -45,9 +50,10 @@ from std_msgs.msg import String
 from std_srvs.srv import Trigger
 
 from dronehacks_pathplan.mission import AIRBORNE, NAV_STATE_NAMES, Mission, MissionConfig, Telemetry
+from dronehacks_pathplan.runtime import Journal, PlanningLoop, make_run_dir, match_pose
 
 MAX_TURN_RATE = .5          # rad/s: depth frames taken while turning faster are dropped (pose error)
-DEPTH_MATCH_S = .05         # an image is placed with the odometry pose within this of its stamp
+VISION_TOPIC = '/fmu/in/vehicle_visual_odometry'
 
 PARAMS = {                  # name: (default, description) -- launch arguments of the same name
     'shadow': (False, 'plan and log only; never publish a setpoint (Offboard can then not start)'),
@@ -71,7 +77,7 @@ PARAMS = {                  # name: (default, description) -- launch arguments o
     'odometry_topic': ('/visual_slam/tracking/odometry', 'cuVSLAM odometry'),
     'state_topic': ('/skybeta/state', 'flight_interface state'),
     'setpoint_topic': ('/skybeta/setpoint/pose', 'flight_interface pose setpoint'),
-    'journal_dir': ('', 'where runs go; empty = <team_ws>/runs or ~/dronehacks_runs'),
+    'journal_dir': ('', 'where runs go; empty = <team_ws>/runs (then ~/flyx-runs, /tmp/flyx-runs)'),
 }
 
 
@@ -102,12 +108,10 @@ class PathplanNode(Node):
         if self.cfg.frame_latch not in ('arm', 'slam_origin'):
             raise ValueError("frame_latch must be 'arm' or 'slam_origin'")
 
-        # ---- journal
-        out = Path(str(g('journal_dir')) or _runs_dir()) / time.strftime('pathplan-%Y%m%d-%H%M%S')
-        out.mkdir(parents=True, exist_ok=True)
+        # ---- journal (its own writer thread: a slow disk never holds up a callback)
+        out = make_run_dir(str(g('journal_dir')) or _runs_dir(), time.strftime('pathplan-%Y%m%d-%H%M%S'))
         self.journal_path = out / 'journal.jsonl'
-        self._journal = open(self.journal_path, 'w', encoding='utf-8')
-        self._jlock = threading.Lock()
+        self._journal = Journal(self.journal_path)
         self.log({'kind': 'start', 'params': {n: g(n) for n in PARAMS}})
 
         # ---- the planner (its own process: planning must never stall the setpoint stream)
@@ -124,30 +128,31 @@ class PathplanNode(Node):
         self.poses = deque(maxlen=150)          # (stamp s, position, q): ~5 s of odometry for depth
         self.poses_lock = threading.Lock()
         self.intr = None
-        self.depth_stats = {'frames': 0, 'given': 0, 'turning': 0, 'matched': 0, 'fallback': 0}
+        self.depth_stats = {'frames': 0, 'given': 0, 'turning': 0, 'matched': 0, 'fallback': 0, 'unmatched': 0}
         self.last_px4 = None
         self.stalls, self.last_tick = [], None
         self.last_state_out = None
         self.reset_pending = False
 
-        sensors, depth_group, planning, control, graph = (MutuallyExclusiveCallbackGroup() for _ in range(5))
-        self.create_subscription(Odometry, str(g('odometry_topic')), self.on_odom, qos_profile_sensor_data,
-                                 callback_group=sensors)
-        self.create_subscription(String, str(g('state_topic')), self.on_state, 10, callback_group=sensors)
+        # one SingleThreadedExecutor runs all of these (main()); planning is NOT a callback
+        self.create_subscription(Odometry, str(g('odometry_topic')), self.on_odom, qos_profile_sensor_data)
+        self.create_subscription(String, str(g('state_topic')), self.on_state, 10)
         depth = str(g('depth_topic'))
         if depth:
             info = str(g('camera_info_topic')) or depth.rsplit('/', 1)[0] + '/camera_info'
-            self.create_subscription(Image, depth, self.on_depth, qos_profile_sensor_data, callback_group=depth_group)
-            self.create_subscription(CameraInfo, info, self.on_info, qos_profile_sensor_data, callback_group=depth_group)
+            self.create_subscription(Image, depth, self.on_depth, qos_profile_sensor_data)
+            self.create_subscription(CameraInfo, info, self.on_info, qos_profile_sensor_data)
         self.setpoint_topic = str(g('setpoint_topic'))
         self.sp_pub = None if self.shadow else self.create_publisher(PoseStamped, self.setpoint_topic, 10)
         self.status_pub = self.create_publisher(String, '~/status', 10)
         self.path_pub = self.create_publisher(PathMsg, '~/path', 10)
-        self.hold_client = self.create_client(Trigger, '/skybeta/hold', callback_group=control)
+        self.hold_client = self.create_client(Trigger, '/skybeta/hold')
         steady = Clock(clock_type=ClockType.STEADY_TIME)
-        self.create_timer(.05, self.on_control, callback_group=control, clock=steady)
-        self.create_timer(.2, self.on_plan, callback_group=planning, clock=steady)
-        self.create_timer(1.0, self.on_graph, callback_group=graph, clock=steady)
+        self.create_timer(.05, self.on_control, clock=steady)
+        self.create_timer(1.0, self.on_graph, clock=steady)
+        # planning: its own thread, because it blocks on the planner process; main() starts it
+        self.planning = PlanningLoop(self.on_plan, .2, on_error=lambda tb: self.log(
+            {'kind': 'error', 'where': 'planning', 'error': tb}))
         self.get_logger().info(
             f'dronehacks_pathplan up ({"SHADOW: no setpoints" if self.shadow else "flying"}): planner '
             f'{g("planner")}, altitude {self.cfg.altitude:.2f} m, depth {depth or "OFF (published map only)"}, '
@@ -156,10 +161,7 @@ class PathplanNode(Node):
 
     # ------------------------------------------------------------------ journal
     def log(self, record):
-        with self._jlock:
-            if not self._journal.closed:
-                self._journal.write(json.dumps(record, default=float) + '\n')
-                self._journal.flush()
+        self._journal.log(record)                   # queued; the journal thread writes it
 
     def ros_now(self):
         t = self.get_clock().now().nanoseconds * 1e-9
@@ -215,23 +217,11 @@ class PathplanNode(Node):
             self.get_logger().info(f'depth camera {msg.width}x{msg.height}, fx {msg.k[0]:.1f}')
 
     def pose_at(self, stamp):
-        """(position, q, turn rate) from the odometry nearest the image stamp (same clock as the
-        camera); projecting a frame with the latest pose smeared walls during turns."""
+        """(position, q, turn rate) at the image stamp, or None: skip the frame (runtime.match_pose;
+        after a stall an unmatched frame is skipped once stamps have matched, as in the flown file)."""
         with self.poses_lock:
             poses = list(self.poses)
-        if not poses:
-            return None
-        t, pos, q = min(poses, key=lambda p: abs(p[0] - stamp))
-        if stamp > 0 and abs(t - stamp) <= DEPTH_MATCH_S:
-            self.depth_stats['matched'] += 1
-            t0, _, q0 = min(poses, key=lambda p: abs(p[0] - (stamp - .15)))
-            from pathplan.ros_node import yaw_of_quat
-            dyaw = yaw_of_quat(*q) - yaw_of_quat(*q0)
-            rate = abs(math.atan2(math.sin(dyaw), math.cos(dyaw))) / max(t - t0, .05)
-            return pos, q, rate
-        self.depth_stats['fallback'] += 1                 # unstamped / other clock: latest pose
-        _, pos, q = poses[-1]
-        return pos, q, 0.0
+        return match_pose(poses, stamp, self.depth_stats)
 
     def on_depth(self, msg):
         m = self.mission
@@ -266,6 +256,9 @@ class PathplanNode(Node):
         n = self.count_publishers('/skybeta/state')
         if n > 1:
             found.append(f'{n} flight interfaces running (/skybeta/state has {n} publishers)')
+        n = self.count_publishers(VISION_TOPIC)
+        if n > 1:                               # two vision bridges: PX4 fuses every sample twice
+            found.append(f'{n} vision bridges ({VISION_TOPIC} has {n} publishers)')
         foreign = '; '.join(found)
         if foreign != self.tel.foreign:
             # one call site per severity: rclpy raises "Logger severity cannot be changed between calls"
@@ -332,7 +325,7 @@ class PathplanNode(Node):
         if out.setpoint is not None and self.sp_pub is not None:
             self.publish_setpoint(*out.setpoint)
         if out.hold_request:
-            self.request_hold()
+            self.request_hold(out.note)
         if int(mono * 20) % 2 == 0:                       # status at ~10 Hz
             m = self.mission
             pc = m.pose_course
@@ -355,13 +348,13 @@ class PathplanNode(Node):
             msg.pose.orientation.z, msg.pose.orientation.w = math.sin(yaw / 2), math.cos(yaw / 2)
         self.sp_pub.publish(msg)
 
-    def request_hold(self):
-        self.log({'kind': 'hold_request', 't': self.ros_now()})
+    def request_hold(self, why=''):
+        self.log({'kind': 'hold_request', 't': self.ros_now(), 'why': why})
         if self.hold_client.service_is_ready():
-            self.hold_client.call_async(Trigger.Request())
-            self.get_logger().error('FAULT: called /skybeta/hold. PILOT: take over and land.')
+            self.hold_client.call_async(Trigger.Request())          # never waits on the executor thread
+            self.get_logger().error(f'called /skybeta/hold: {why}')
         else:
-            self.get_logger().error('FAULT: /skybeta/hold not available; setpoints stopped. PILOT: take over and land.')
+            self.get_logger().error(f'/skybeta/hold not available; setpoints stopped: {why}')
 
     # ------------------------------------------------------------------ summary
     def print_summary(self):
@@ -371,6 +364,8 @@ class PathplanNode(Node):
                  'states: ' + ' -> '.join(e['to'] for e in m.events[-14:])]
         if self.stalls:
             lines.append(f'control-loop stalls > 0.15 s: {len(self.stalls)}, worst {max(self.stalls):.2f} s')
+        if m.px4_failsafe_waits:
+            lines.append(f'PX4 failsafe Holds / link gaps ridden out: {m.px4_failsafe_waits * .05:.1f} s in total')
         q = p.depth_quality or {}
         if q.get('hits'):
             lines.append(f"depth: {self.depth_stats['given']} frames used, {self.depth_stats['turning']} dropped (turning); "
@@ -387,17 +382,20 @@ class PathplanNode(Node):
         if self.mission.state in AIRBORNE:
             self.get_logger().error(f'shutting down in {self.mission.state}: flight_interface keeps holding the '
                                     'last setpoint. PILOT: take over and land.')
+        self.planning.stop()                    # finish the step in flight before closing its pipe
         self.print_summary()
         self.planner.close()
-        with self._jlock:
-            self._journal.close()
+        self._journal.close()
 
 
 def main(args=None):
     rclpy.init(args=args)
     node = PathplanNode()
-    executor = MultiThreadedExecutor(num_threads=5)
+    # Single-threaded executor: every callback is short. The MultiThreadedExecutor burnt ~73 % of a
+    # core on this message load (single: ~13 %); FlyX run 7 saw 86 stalls up to 1.95 s with it.
+    executor = SingleThreadedExecutor()
     executor.add_node(node)
+    node.planning.start()
     try:
         executor.spin()
     except (KeyboardInterrupt, ExternalShutdownException):
