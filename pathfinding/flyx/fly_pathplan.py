@@ -61,8 +61,8 @@ def parse_args(argv=None):
     ap.add_argument("--launch-heading", type=float, default=1.5707963, help="course-frame heading on the mark, rad")
     ap.add_argument("--launch-body-agl", type=float, default=.05)
     ap.add_argument("--output", type=Path, default=ROOT / "runs" / f"flyx-{time.strftime('%Y%m%d-%H%M%S')}")
-    ap.add_argument("--turns", choices=["on", "off"], default="off",
-                    help="speed-gated sharper turning when slow (off = the base program exactly)")
+    ap.add_argument("--turns", choices=["on", "off"], default="on",
+                    help="speed-gated sharper turning when slow (v5 default; off = v4c's 0.25 rad/s cap)")
     ap.add_argument("--yaw-speed-max", type=float, default=.10, help="turns: bound on yaw rate x speed, rad m/s^2")
     ap.add_argument("--yaw-rate-slow-max", type=float, default=.50, help="turns: yaw-rate ceiling when slow, rad/s")
     ap.add_argument("--yaw-rate-in-place-max", type=float, default=.35, help="turns: yaw-rate ceiling turning in place")

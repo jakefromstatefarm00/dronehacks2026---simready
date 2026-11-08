@@ -1,0 +1,31 @@
+| run | arm | load s/e | valid | complete | cps | nav_s | land | diverged_at | contact | min_clear | corner_yv | yv_peak | wall_yaw_rad | short_view_rad | corner_view_min | corner_view_mean | launch_turn_rad | near | forget | look | back | escape | plan_ms_p95 | plan_ms_max |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| v900 | v4c | 12.7/9.3 | True | True | 5 | 55.1 | landing pad reached (0.07 m from its centre) | None | False | 0.373 | 0.118 | 0.124 | 0.47 | 4.59 | 0.73 | 1.03 | 0.05 | 1 | 0 | 0 | 0 | 0 | 97.0 | 132.0 |
+| v901 | v4c | 2.4/11.3 | True | True | 5 | 55.4 | landing pad reached (0.08 m from its centre) | None | False | 0.375 | 0.125 | 0.128 | 0.25 | 4.26 | 0.78 | 1.02 | 0.05 | 1 | 0 | 0 | 0 | 0 | 95.0 | 130.0 |
+| v905 | v4c | 10.3/12.3 | True | True | 5 | 57.9 | landing pad reached (0.07 m from its centre) | None | False | 0.367 | 0.122 | 0.135 | 0.5 | 4.7 | 0.75 | 1.01 | 0.05 | 1 | 0 | 0 | 0 | 0 | 115.0 | 144.0 |
+| v909 | v4c | 14.5/13.9 | True | True | 5 | 61.9 | landing pad reached (0.08 m from its centre) | 53.1 | True | 0.184 | 0.102 | 0.331 | 0.82 | 2.99 | 0.9 | 1.18 | 1.21 | 3 | 2 | 1 | 0 | 0 | 104.0 | 139.0 |
+| v910 | v4c | 14.6/13.1 | True | True | 5 | 56.8 | landing pad reached (0.08 m from its centre) | None | False | 0.393 | 0.111 | 0.119 | 0.4 | 4.63 | 0.7 | 0.96 | 0.04 | 1 | 0 | 0 | 0 | 0 | 97.0 | 133.0 |
+| v914 | v4c | 13.6/11.5 | True | False | 0 | 17.1 | unhealthy: estimator invalid (xy_valid=False, z_va | None | False | None | None | None | 0.0 | None | None | None | 0.0 | 1 | 2 | 0 | 0 | 76 | 40.0 | 89.0 |
+| v918 | v4c | 13.4/15.3 | True | True | 5 | 55.8 | landing pad reached (0.07 m from its centre) | None | False | 0.391 | 0.113 | 0.131 | 0.57 | 4.81 | 0.7 | 0.9 | 0.04 | 2 | 0 | 0 | 0 | 0 | 98.0 | 135.0 |
+| v919 | v4c | 11.5/11.5 | True | True | 5 | 56.2 | landing pad reached (0.08 m from its centre) | None | False | 0.366 | 0.114 | 0.132 | 0.47 | 4.38 | 0.73 | 0.99 | 0.06 | 2 | 0 | 0 | 0 | 11 | 95.0 | 124.0 |
+| v923 | v4c | 13.7/11.0 | True | False | 1 | 22.7 | unhealthy: estimator invalid (xy_valid=False, z_va | 14.5 | True | 0.129 | 0.191 | 0.271 | 0.01 | 1.44 | 0.38 | 0.9 | 0.34 | 5 | 2 | 1 | 0 | 43 | 144.0 | 454.0 |
+| v925 | v4c | 7.8/10.7 | True | True | 5 | 56.9 | landing pad reached (0.08 m from its centre) | None | False | 0.386 | 0.125 | 0.125 | 0.42 | 4.52 | 0.7 | 0.95 | 0.04 | 0 | 0 | 0 | 0 | 0 | 96.0 | 127.0 |
+| v929 | v4c | 9.3/10.4 | True | True | 5 | 59.5 | landing pad reached (0.08 m from its centre) | None | False | 0.36 | 0.11 | 0.11 | 0.61 | 5.08 | 0.55 | 0.81 | 0.09 | 0 | 0 | 0 | 0 | 0 | 97.0 | 161.0 |
+| v933 | v4c | 10.4/12.0 | True | True | 5 | 55.0 | landing pad reached (0.07 m from its centre) | None | False | 0.368 | 0.121 | 0.133 | 0.5 | 4.11 | 0.7 | 1.06 | 0.04 | 1 | 0 | 0 | 0 | 0 | 98.0 | 132.0 |
+| v934 | v4c | 9.6/10.3 | True | True | 5 | 57.2 | landing pad reached (0.08 m from its centre) | None | False | 0.359 | 0.123 | 0.127 | 0.48 | 4.13 | 0.75 | 1.05 | 0.03 | 2 | 0 | 0 | 0 | 0 | 98.0 | 132.0 |
+| v902 | gate | 4.7/11.3 | True | False | 0 | 17.3 | unhealthy: estimator invalid (xy_valid=False, z_va | None | False | None | None | None | 0.0 | None | None | None | 0.0 | 1 | 2 | 0 | 0 | 82 | 41.0 | 117.0 |
+| v906 | gate | 10.4/11.1 | True | True | 5 | 59.5 | landing pad reached (0.08 m from its centre) | None | False | 0.389 | 0.084 | 0.103 | 0.51 | 4.94 | 0.58 | 0.79 | 0.05 | 1 | 0 | 0 | 0 | 0 | 97.0 | 125.0 |
+| v907 | gate | 14.8/13.7 | True | True | 5 | 58.5 | landing pad reached (0.07 m from its centre) | None | False | 0.393 | 0.084 | 0.103 | 0.45 | 4.88 | 0.6 | 0.8 | 0.04 | 0 | 0 | 0 | 0 | 0 | 97.0 | 124.0 |
+| v912 | gate | 15.2/12.2 | True | True | 5 | 60.8 | landing pad reached (0.08 m from its centre) | None | False | 0.372 | 0.099 | 0.103 | 0.36 | 4.98 | 0.58 | 0.86 | 0.05 | 1 | 0 | 0 | 0 | 0 | 116.0 | 164.0 |
+| v913 | gate | 11.9/11.7 | True | True | 5 | 58.7 | landing pad reached (0.07 m from its centre) | None | False | 0.397 | 0.092 | 0.105 | 0.4 | 4.81 | 0.6 | 0.83 | 0.04 | 0 | 0 | 0 | 0 | 0 | 97.0 | 130.0 |
+| v917 | gate | 12.3/12.5 | True | True | 5 | 58.5 | landing pad reached (0.08 m from its centre) | None | False | 0.394 | 0.086 | 0.099 | 0.27 | 4.84 | 0.58 | 0.79 | 0.04 | 1 | 0 | 0 | 0 | 0 | 95.0 | 122.0 |
+| v920 | gate | 12.6/9.9 | True | False | 0 | None |  | None | True | 0.174 | None | 0.022 | 0.16 | 0.0 | None | None | 0.17 | 0 | 0 | 0 | 0 | 0 | None | None |
+| v924 | gate | 11.9/8.6 | True | True | 5 | 58.8 | landing pad reached (0.07 m from its centre) | None | False | 0.387 | 0.093 | 0.102 | 0.56 | 4.93 | 0.58 | 0.81 | 0.04 | 1 | 0 | 0 | 0 | 0 | 97.0 | 121.0 |
+| v903 | v5a | 6.2/9.6 | True | True | 5 | 58.4 | landing pad reached (0.08 m from its centre) | None | False | 0.374 | 0.114 | 0.114 | 0.63 | 4.63 | 0.68 | 0.99 | 0.04 | 2 | 0 | 0 | 0 | 0 | 96.0 | 130.0 |
+| v904 | v5a | 11.5/15.0 | True | True | 5 | 55.4 | landing pad reached (0.07 m from its centre) | None | False | 0.38 | 0.108 | 0.132 | 0.25 | 4.54 | 0.65 | 0.94 | 0.04 | 0 | 0 | 0 | 0 | 0 | 96.0 | 136.0 |
+| v908 | v5a | 12.0/13.5 | True | True | 5 | 58.5 | landing pad reached (0.07 m from its centre) | None | False | 0.394 | 0.118 | 0.127 | 0.65 | 4.6 | 0.7 | 1.02 | 0.04 | 2 | 0 | 0 | 0 | 0 | 96.0 | 127.0 |
+| v911 | v5a | 14.0/13.6 | True | True | 5 | 57.2 | landing pad reached (0.07 m from its centre) | None | False | 0.365 | 0.119 | 0.12 | 0.45 | 4.87 | 0.65 | 0.9 | 0.04 | 2 | 0 | 0 | 0 | 0 | 98.0 | 129.0 |
+| v915 | v5a | 11.9/14.7 | True | True | 5 | 58.4 | landing pad reached (0.07 m from its centre) | None | False | 0.349 | 0.114 | 0.127 | 0.65 | 4.32 | 0.7 | 0.95 | 0.04 | 0 | 0 | 0 | 0 | 0 | 94.0 | 125.0 |
+| v916 | v5a | 11.7/12.1 | True | True | 5 | 57.7 | landing pad reached (0.07 m from its centre) | None | False | 0.398 | 0.13 | 0.13 | 0.56 | 4.82 | 0.73 | 1.02 | 0.04 | 0 | 0 | 0 | 0 | 0 | 98.0 | 127.0 |
+| v921 | v5a | 12.2/16.1 | True | True | 5 | 59.7 | landing pad reached (0.08 m from its centre) | None | False | 0.376 | 0.124 | 0.126 | 0.86 | 4.57 | 0.63 | 1.24 | 0.04 | 2 | 0 | 0 | 0 | 0 | 96.0 | 135.0 |
+| v922 | v5a | 11.2/11.9 | True | True | 5 | 56.5 | landing pad reached (0.08 m from its centre) | None | False | 0.355 | 0.123 | 0.126 | 0.36 | 4.39 | 0.78 | 1.04 | 0.1 | 3 | 0 | 0 | 0 | 21 | 98.0 | 128.0 |

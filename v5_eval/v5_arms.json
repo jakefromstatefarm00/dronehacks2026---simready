@@ -1,0 +1,313 @@
+{
+ "v5off": [
+  "upload_to_flyx_v5",
+  {
+   "plan_cache": false,
+   "look_guard": false,
+   "corner_view": false,
+   "forget_votes": false,
+   "forget_snap": false
+  }
+ ],
+ "cache": [
+  "upload_to_flyx_v5",
+  {
+   "plan_cache": true,
+   "look_guard": false,
+   "corner_view": false,
+   "forget_votes": false,
+   "forget_snap": false
+  }
+ ],
+ "look": [
+  "upload_to_flyx_v5",
+  {
+   "plan_cache": true,
+   "look_guard": true,
+   "corner_view": false,
+   "forget_votes": false,
+   "forget_snap": false
+  }
+ ],
+ "view": [
+  "upload_to_flyx_v5",
+  {
+   "plan_cache": true,
+   "look_guard": false,
+   "corner_view": true,
+   "forget_votes": false,
+   "forget_snap": false
+  }
+ ],
+ "fvotes": [
+  "upload_to_flyx_v5",
+  {
+   "plan_cache": true,
+   "look_guard": false,
+   "corner_view": false,
+   "forget_votes": true,
+   "forget_snap": false
+  }
+ ],
+ "fsnap": [
+  "upload_to_flyx_v5",
+  {
+   "plan_cache": true,
+   "look_guard": false,
+   "corner_view": false,
+   "forget_votes": false,
+   "forget_snap": true
+  }
+ ],
+ "srelax": [
+  "upload_to_flyx_v5b",
+  {
+   "plan_cache": true,
+   "look_guard": false,
+   "corner_view": false,
+   "forget_votes": false,
+   "forget_snap": false,
+   "solid_relax": true,
+   "solid_off": false,
+   "soft_margin": null
+  }
+ ],
+ "soff": [
+  "upload_to_flyx_v5b",
+  {
+   "plan_cache": true,
+   "look_guard": false,
+   "corner_view": false,
+   "forget_votes": false,
+   "forget_snap": false,
+   "solid_relax": false,
+   "solid_off": true,
+   "soft_margin": null
+  }
+ ],
+ "soft15": [
+  "upload_to_flyx_v5b",
+  {
+   "plan_cache": true,
+   "look_guard": false,
+   "corner_view": false,
+   "forget_votes": false,
+   "forget_snap": false,
+   "solid_relax": false,
+   "solid_off": false,
+   "soft_margin": 0.15
+  }
+ ],
+ "gate": [
+  "upload_to_flyx_v4c_turns",
+  {
+   "view_m": true
+  },
+  {
+   "turn_gate": true,
+   "yaw_speed_max": 0.1,
+   "yaw_rate_slow_max": 0.5,
+   "yaw_rate_in_place_max": 0.35
+  }
+ ],
+ "gate0": [
+  "upload_to_flyx_v5c",
+  {
+   "plan_cache": false,
+   "look_guard": false,
+   "corner_view": false,
+   "forget_votes": false,
+   "forget_snap": false,
+   "solid_relax": false,
+   "solid_off": false,
+   "soft_margin": null,
+   "view_m": true
+  },
+  {
+   "turn_gate": true,
+   "yaw_speed_max": 0.1,
+   "yaw_rate_slow_max": 0.5,
+   "yaw_rate_in_place_max": 0.35
+  }
+ ],
+ "v5coff": [
+  "upload_to_flyx_v5c",
+  {
+   "plan_cache": false,
+   "look_guard": false,
+   "corner_view": false,
+   "forget_votes": false,
+   "forget_snap": false,
+   "solid_relax": false,
+   "solid_off": false,
+   "soft_margin": null
+  },
+  {}
+ ],
+ "F1": [
+  "upload_to_flyx_v5d",
+  {
+   "plan_cache": true,
+   "look_guard": true,
+   "corner_view": false,
+   "forget_votes": false,
+   "forget_snap": true,
+   "solid_relax": false,
+   "solid_off": false,
+   "soft_margin": null
+  },
+  {
+   "plan_in_takeoff": false
+  }
+ ],
+ "F1g": [
+  "upload_to_flyx_v5d",
+  {
+   "plan_cache": true,
+   "look_guard": true,
+   "corner_view": false,
+   "forget_votes": false,
+   "forget_snap": true,
+   "solid_relax": false,
+   "solid_off": false,
+   "soft_margin": null,
+   "view_m": true
+  },
+  {
+   "turn_gate": true,
+   "yaw_speed_max": 0.1,
+   "yaw_rate_slow_max": 0.5,
+   "yaw_rate_in_place_max": 0.35,
+   "plan_in_takeoff": false
+  }
+ ],
+ "F1ns": [
+  "upload_to_flyx_v5d",
+  {
+   "plan_cache": true,
+   "look_guard": true,
+   "corner_view": false,
+   "forget_votes": false,
+   "forget_snap": false,
+   "solid_relax": false,
+   "solid_off": false,
+   "soft_margin": null
+  },
+  {
+   "plan_in_takeoff": false
+  }
+ ],
+ "F2": [
+  "upload_to_flyx_v5d",
+  {
+   "plan_cache": true,
+   "look_guard": true,
+   "corner_view": false,
+   "forget_votes": false,
+   "forget_snap": true,
+   "solid_relax": false,
+   "solid_off": false,
+   "soft_margin": 0.15
+  },
+  {
+   "plan_in_takeoff": false
+  }
+ ],
+ "F2ns": [
+  "upload_to_flyx_v5d",
+  {
+   "plan_cache": true,
+   "look_guard": true,
+   "corner_view": false,
+   "forget_votes": false,
+   "forget_snap": false,
+   "solid_relax": false,
+   "solid_off": false,
+   "soft_margin": 0.15
+  },
+  {
+   "plan_in_takeoff": false
+  }
+ ],
+ "F2nsg": [
+  "upload_to_flyx_v5d",
+  {
+   "plan_cache": true,
+   "look_guard": true,
+   "corner_view": false,
+   "forget_votes": false,
+   "forget_snap": false,
+   "solid_relax": false,
+   "solid_off": false,
+   "soft_margin": 0.15,
+   "view_m": true
+  },
+  {
+   "turn_gate": true,
+   "yaw_speed_max": 0.1,
+   "yaw_rate_slow_max": 0.5,
+   "yaw_rate_in_place_max": 0.35,
+   "plan_in_takeoff": false
+  }
+ ],
+ "Lk": [
+  "upload_to_flyx_v5d",
+  {
+   "plan_cache": true,
+   "look_guard": true,
+   "corner_view": false,
+   "forget_votes": false,
+   "forget_snap": false,
+   "solid_relax": false,
+   "solid_off": false,
+   "soft_margin": null
+  },
+  {
+   "plan_in_takeoff": true
+  }
+ ],
+ "Tk": [
+  "upload_to_flyx_v5d",
+  {
+   "plan_cache": true,
+   "look_guard": false,
+   "corner_view": false,
+   "forget_votes": false,
+   "forget_snap": false,
+   "solid_relax": false,
+   "solid_off": false,
+   "soft_margin": null
+  },
+  {
+   "plan_in_takeoff": false
+  }
+ ],
+ "C5": [
+  "upload_to_flyx_v5d",
+  {
+   "plan_cache": true,
+   "look_guard": false,
+   "corner_view": false,
+   "forget_votes": false,
+   "forget_snap": false,
+   "solid_relax": false,
+   "solid_off": false,
+   "soft_margin": null
+  },
+  {
+   "plan_in_takeoff": true
+  }
+ ],
+ "v5final": [
+  "upload_to_flyx_v5final",
+  {
+   "view_m": true
+  },
+  {
+   "turn_gate": true,
+   "yaw_speed_max": 0.1,
+   "yaw_rate_slow_max": 0.5,
+   "yaw_rate_in_place_max": 0.35
+  }
+ ]
+}

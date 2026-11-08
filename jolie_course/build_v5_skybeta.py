@@ -14,12 +14,33 @@ import importlib.util
 HERE = Path(__file__).resolve().parent
 
 
+class _Text:
+    def __init__(self, text):
+        self.text = text
+
+    def read_text(self, encoding="utf-8"):
+        return self.text
+
+
 def main():
     spec = importlib.util.spec_from_file_location("build_skybeta_copy", HERE / "build_skybeta_copy.py")
     b = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(b)
     b.SRC = HERE / "upload_to_flyx_v5.py"
     b.OUT = HERE / "upload_to_flyx_v5_skybeta.py"
+    # main() template: pass the turn-gate options exactly as the native fly_pathplan main() does
+    # (planner_options(a) to the planner child, turns_config(a) to MissionConfig)
+    tmpl = b.MAIN.read_text(encoding="utf-8")
+    for a, c in ((
+            '''    planner = PlannerProcess(build_planner, (a.planner, a.altitude, a.camera_offset, a.camera_pitch_down_deg,
+                                             a.carrot))     # first: it forks''',
+            '''    planner = PlannerProcess(build_planner, (a.planner, a.altitude, a.camera_offset, a.camera_pitch_down_deg,
+                                             a.carrot, planner_options(a)))     # first: it forks'''), (
+            '''        ack_timeout_s=1e9))''',
+            '''        ack_timeout_s=1e9, **turns_config(a)))''')):
+        assert tmpl.count(a) == 1, "skybeta_main.py.in changed; update build_v5_skybeta.py"
+        tmpl = tmpl.replace(a, c)
+    b.MAIN = _Text(tmpl)
     old = b.DOC
     b.DOC = b.DOC.replace(
         '"""Jolie\'s FlyX-proven planner (upload_to_flyx.py) on the Sky Beta contract - the drone\'s interface.',

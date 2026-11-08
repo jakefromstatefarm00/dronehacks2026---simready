@@ -1,0 +1,15 @@
+| run | arm | load s/e | valid | complete | cps | nav_s | land | diverged_at | contact | min_clear | corner_yv | yv_peak | wall_yaw_rad | short_view_rad | corner_view_min | corner_view_mean | launch_turn_rad | near | forget | look | back | escape | plan_ms_p95 | plan_ms_max |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| v938 | v4c | 9.9/10.3 | True | False | 1 | 18.4 | unhealthy: estimator invalid (xy_valid=False, z_va | 7.2 | True | 0.07 | 0.138 | 0.138 | 0.1 | 0.8 | 0.6 | 0.89 | 0.05 | 4 | 2 | 1 | 0 | 22 | 142.0 | 427.0 |
+| v942 | v4c | 9.4/13.3 | True | True | 5 | 57.1 | landing pad reached (0.08 m from its centre) | None | False | 0.386 | 0.126 | 0.13 | 0.56 | 4.58 | 0.73 | 0.93 | 0.04 | 0 | 0 | 0 | 0 | 0 | 97.0 | 138.0 |
+| v943 | v4c | 11.5/11.9 | True | True | 5 | 54.7 | landing pad reached (0.08 m from its centre) | None | False | 0.389 | 0.132 | 0.14 | 0.5 | 4.5 | 0.73 | 1.02 | 0.04 | 2 | 0 | 0 | 0 | 0 | 98.0 | 123.0 |
+| v947 | v4c | 10.3/14.4 | True | False | 0 | None |  | None | False | None | None | None | 0.0 | None | None | None | 0.0 | 0 | 0 | 0 | 0 | 0 | None | None |
+| v936 | F1 | 12.8/15.8 | True | True | 5 | 55.5 | landing pad reached (0.08 m from its centre) | None | False | 0.377 | 0.119 | 0.128 | 0.32 | 4.56 | 0.65 | 0.91 | 0.04 | 3 | 0 | 0 | 0 | 0 | 96.0 | 131.0 |
+| v937 | F1 | 11.5/15.1 | True | True | 5 | 62.3 | landing pad reached (0.07 m from its centre) | 54.4 | True | 0.214 | 0.124 | 0.232 | 0.56 | 3.62 | 0.88 | 1.21 | 0.48 | 4 | 0 | 0 | 0 | 0 | 125.0 | 144.0 |
+| v941 | F1 | 10.3/15.6 | True | True | 5 | 57.4 | landing pad reached (0.08 m from its centre) | None | False | 0.397 | 0.116 | 0.133 | 0.47 | 4.25 | 0.73 | 0.99 | 0.04 | 1 | 0 | 0 | 0 | 0 | 96.0 | 132.0 |
+| v944 | F1 | 13.3/14.3 | True | True | 5 | 55.5 | landing pad reached (0.07 m from its centre) | None | False | 0.371 | 0.122 | 0.131 | 0.49 | 4.43 | 0.73 | 0.99 | 0.04 | 1 | 0 | 0 | 0 | 0 | 99.0 | 127.0 |
+| v948 | F1 | 11.5/14.1 | True | False | 0 | 9.7 | unhealthy: estimator invalid (xy_valid=False, z_va | None | False | None | None | None | 0.0 | None | None | None | 0.0 | 1 | 2 | 1 | 0 | 5 | 188.0 | 539.0 |
+| v939 | F1g | 15.2/12.3 | True | True | 5 | 61.1 | landing pad reached (0.07 m from its centre) | None | False | 0.392 | 0.091 | 0.115 | 1.06 | 4.89 | 0.55 | 0.84 | 0.04 | 0 | 0 | 0 | 0 | 0 | 96.0 | 123.0 |
+| v940 | F1g | 13.4/9.4 | True | True | 5 | 59.3 | landing pad reached (0.07 m from its centre) | None | False | 0.379 | 0.096 | 0.105 | 0.29 | 4.78 | 0.63 | 0.82 | 0.05 | 2 | 0 | 0 | 0 | 0 | 99.0 | 128.0 |
+| v945 | F1g | 11.9/12.0 | True | True | 5 | 57.0 | landing pad reached (0.07 m from its centre) | None | False | 0.403 | 0.087 | 0.113 | 0.0 | 4.85 | 0.53 | 0.78 | 0.01 | 1 | 0 | 0 | 0 | 0 | 97.0 | 131.0 |
+| v946 | F1g | 13.5/10.3 | True | True | 5 | 59.7 | landing pad reached (0.08 m from its centre) | None | False | 0.382 | 0.085 | 0.1 | 0.52 | 5.07 | 0.6 | 0.84 | 0.04 | 0 | 0 | 0 | 0 | 0 | 98.0 | 132.0 |

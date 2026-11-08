@@ -1,0 +1,26 @@
+| run | arm | load s/e | valid | complete | cps | nav_s | land | diverged_at | contact | min_clear | corner_yv | yv_peak | wall_yaw_rad | short_view_rad | corner_view_min | corner_view_mean | launch_turn_rad | near | forget | look | back | escape | plan_ms_p95 | plan_ms_max |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| v950 | v4c | 10.6/10.7 | True | True | 5 | 54.6 | landing pad reached (0.07 m from its centre) | None | False | 0.379 | 0.12 | 0.127 | 0.3 | 4.48 | 0.68 | 0.91 | 0.04 | 2 | 0 | 0 | 0 | 0 | 98.0 | 134.0 |
+| v954 | v4c | 11.4/14.0 | True | True | 5 | 60.0 | landing pad reached (0.07 m from its centre) | None | True | 0.271 | 0.14 | 0.14 | 0.52 | 4.3 | 0.53 | 1.25 | 0.04 | 2 | 0 | 0 | 0 | 0 | 101.0 | 129.0 |
+| v955 | v4c | 12.3/14.0 | True | True | 5 | 59.0 | landing pad reached (0.08 m from its centre) | None | False | 0.378 | 0.129 | 0.129 | 0.5 | 4.48 | 0.73 | 0.96 | 0.04 | 1 | 0 | 0 | 0 | 0 | 98.0 | 132.0 |
+| v960 | v4c | 11.5/12.1 | True | True | 5 | 56.7 | landing pad reached (0.07 m from its centre) | None | False | 0.365 | 0.111 | 0.124 | 0.55 | 4.69 | 0.65 | 0.9 | 0.04 | 1 | 0 | 0 | 0 | 0 | 96.0 | 131.0 |
+| v961 | v4c | 14.6/16.2 | True | True | 5 | 56.7 | landing pad reached (0.08 m from its centre) | None | False | 0.374 | 0.108 | 0.122 | 0.32 | 4.45 | 0.7 | 0.91 | 0.05 | 1 | 0 | 0 | 0 | 0 | 94.0 | 119.0 |
+| v965 | v4c | 13.6/11.6 | True | True | 5 | 63.5 | landing pad reached (0.07 m from its centre) | None | False | 0.357 | 0.12 | 0.137 | 0.77 | 4.31 | 0.73 | 1.01 | 0.04 | 2 | 0 | 0 | 0 | 0 | 95.0 | 129.0 |
+| v968 | v4c | 11.0/11.2 | True | True | 5 | 53.5 | landing pad reached (0.08 m from its centre) | None | False | 0.398 | 0.128 | 0.131 | 0.15 | 4.33 | 0.75 | 0.96 | 0.04 | 0 | 0 | 0 | 0 | 0 | 100.0 | 124.0 |
+| v972 | v4c | 10.6/7.6 | True | True | 5 | 55.6 | landing pad reached (0.08 m from its centre) | None | False | 0.395 | 0.129 | 0.135 | 0.37 | 4.45 | 0.73 | 0.93 | 0.05 | 2 | 0 | 0 | 0 | 0 | 97.0 | 130.0 |
+| v949 | F2 | 13.1/12.3 | True | True | 5 | 54.5 | landing pad reached (0.08 m from its centre) | None | False | 0.31 | 0.127 | 0.136 | 0.14 | 4.81 | 0.55 | 1.0 | 0.04 | 2 | 0 | 0 | 0 | 0 | 97.0 | 128.0 |
+| v953 | F2 | 13.7/13.7 | True | True | 5 | 57.2 | landing pad reached (0.07 m from its centre) | None | False | 0.374 | 0.119 | 0.136 | 0.27 | 4.64 | 0.65 | 0.9 | 0.05 | 1 | 0 | 0 | 0 | 0 | 97.0 | 124.0 |
+| v956 | F2 | 13.4/14.2 | True | True | 5 | 58.5 | landing pad reached (0.07 m from its centre) | None | False | 0.369 | 0.133 | 0.133 | 0.63 | 4.46 | 0.73 | 1.0 | 0.04 | 1 | 0 | 0 | 0 | 0 | 98.0 | 129.0 |
+| v958 | F2 | 13.1/15.1 | True | True | 5 | 55.5 | landing pad reached (0.08 m from its centre) | None | False | 0.369 | 0.115 | 0.127 | 0.0 | 4.67 | 0.7 | 0.92 | 0.05 | 1 | 0 | 0 | 0 | 0 | 100.0 | 134.0 |
+| v963 | F2 | 12.0/13.1 | True | False | 0 | None |  | None | False | 0.285 | None | None | 0.0 | None | None | None | 0.0 | 0 | 0 | 0 | 0 | 0 | None | None |
+| v966 | F2 | 13.2/10.0 | True | True | 5 | 56.2 | landing pad reached (0.07 m from its centre) | None | False | 0.373 | 0.113 | 0.123 | 0.34 | 4.38 | 0.73 | 1.08 | 0.05 | 1 | 0 | 0 | 0 | 0 | 97.0 | 122.0 |
+| v967 | F2 | 12.7/15.3 | True | True | 5 | 59.3 | landing pad reached (0.08 m from its centre) | None | False | 0.365 | 0.112 | 0.128 | 0.33 | 4.33 | 0.68 | 0.9 | 0.05 | 1 | 0 | 0 | 0 | 0 | 103.0 | 120.0 |
+| v971 | F2 | 10.1/12.3 | True | True | 5 | 58.7 | landing pad reached (0.08 m from its centre) | None | False | 0.369 | 0.134 | 0.138 | 0.5 | 4.39 | 0.73 | 1.11 | 0.05 | 2 | 0 | 0 | 0 | 0 | 98.0 | 136.0 |
+| v951 | F2g | 11.7/12.0 | True | True | 5 | 62.0 | landing pad reached (0.07 m from its centre) | None | False | 0.361 | 0.088 | 0.109 | 1.0 | 4.84 | 0.58 | 0.88 | 0.04 | 1 | 0 | 0 | 0 | 0 | 96.0 | 117.0 |
+| v952 | F2g | 13.7/12.6 | True | True | 5 | 59.3 | landing pad reached (0.07 m from its centre) | None | False | 0.38 | 0.088 | 0.108 | 0.34 | 4.7 | 0.63 | 0.86 | 0.04 | 0 | 0 | 0 | 0 | 0 | 98.0 | 118.0 |
+| v957 | F2g | 13.6/11.5 | True | True | 5 | 63.9 | landing pad reached (0.07 m from its centre) | None | False | 0.357 | 0.087 | 0.108 | 0.8 | 5.37 | 0.53 | 0.74 | 0.14 | 1 | 2 | 2 | 0 | 10 | 114.0 | 214.0 |
+| v959 | F2g | 12.1/14.1 | True | True | 5 | 60.1 | landing pad reached (0.08 m from its centre) | None | False | 0.38 | 0.092 | 0.098 | 0.52 | 4.74 | 0.6 | 0.96 | 0.05 | 0 | 0 | 0 | 0 | 0 | 96.0 | 131.0 |
+| v962 | F2g | 13.3/13.2 | True | True | 5 | 67.6 | landing pad reached (0.08 m from its centre) | None | False | 0.364 | 0.084 | 0.097 | 0.91 | 4.44 | 0.55 | 0.91 | 0.05 | 0 | 0 | 0 | 0 | 0 | 95.0 | 151.0 |
+| v964 | F2g | 14.8/14.8 | True | True | 5 | 61.9 | landing pad reached (0.07 m from its centre) | None | False | 0.367 | 0.092 | 0.103 | 1.15 | 4.41 | 0.6 | 1.05 | 0.04 | 1 | 0 | 0 | 0 | 0 | 98.0 | 132.0 |
+| v969 | F2g | 11.5/10.1 | True | True | 5 | 62.7 | landing pad reached (0.07 m from its centre) | None | False | 0.35 | 0.09 | 0.099 | 0.77 | 5.51 | 0.48 | 0.74 | 0.06 | 2 | 0 | 0 | 0 | 0 | 103.0 | 152.0 |
+| v970 | F2g | 13.1/16.2 | True | True | 5 | 57.8 | landing pad reached (0.08 m from its centre) | None | False | 0.389 | 0.098 | 0.101 | 0.29 | 4.9 | 0.58 | 0.85 | 0.05 | 0 | 0 | 0 | 0 | 0 | 96.0 | 133.0 |
