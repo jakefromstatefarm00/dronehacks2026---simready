@@ -50,10 +50,10 @@ from std_msgs.msg import String
 from std_srvs.srv import Trigger
 
 from dronehacks_pathplan.mission import AIRBORNE, NAV_STATE_NAMES, Mission, MissionConfig, Telemetry
-from dronehacks_pathplan.runtime import Journal, PlanningLoop, make_run_dir, match_pose
+from dronehacks_pathplan.runtime import (VISION_TOPIC, Journal, PlanningLoop, foreign_publishers,
+                                         make_run_dir, match_pose)
 
 MAX_TURN_RATE = .5          # rad/s: depth frames taken while turning faster are dropped (pose error)
-VISION_TOPIC = '/fmu/in/vehicle_visual_odometry'
 
 PARAMS = {                  # name: (default, description) -- launch arguments of the same name
     'shadow': (False, 'plan and log only; never publish a setpoint (Offboard can then not start)'),
@@ -245,21 +245,9 @@ class PathplanNode(Node):
 
     # ------------------------------------------------------------------ graph checks (1 Hz)
     def on_graph(self):
-        own = 0 if self.sp_pub is None else 1
-        found = []
-        n = self.count_publishers(self.setpoint_topic) - own
-        if n > 0:
-            found.append(f'{n} other publisher(s) on {self.setpoint_topic} (another competitor node?)')
-        n = self.count_publishers('/skybeta/setpoint/twist')
-        if n > 0:
-            found.append(f'{n} publisher(s) on /skybeta/setpoint/twist')
-        n = self.count_publishers('/skybeta/state')
-        if n > 1:
-            found.append(f'{n} flight interfaces running (/skybeta/state has {n} publishers)')
-        n = self.count_publishers(VISION_TOPIC)
-        if n > 1:                               # two vision bridges: PX4 fuses every sample twice
-            found.append(f'{n} vision bridges ({VISION_TOPIC} has {n} publishers)')
-        foreign = '; '.join(found)
+        topics = (self.setpoint_topic, '/skybeta/setpoint/twist', '/skybeta/state', VISION_TOPIC)
+        foreign = foreign_publishers({t: self.count_publishers(t) for t in topics}, self.setpoint_topic,
+                                     own_setpoint=self.sp_pub is not None)
         if foreign != self.tel.foreign:
             # one call site per severity: rclpy raises "Logger severity cannot be changed between calls"
             if foreign:

@@ -15,6 +15,10 @@ checks, for real messages over the window (topic names alone prove nothing):
                         /skybeta/setpoint/*
   depth (optional)      rate, encoding, size, CameraInfo
   sim clock             /clock present (simulator) or absent (drone)
+  Offboard stamps       /fmu/in/offboard_control_mode timestamps (flight_interface's) against PX4's
+                        clock as /fmu/out/vehicle_odometry shows it: FAIL if they fall behind, run
+                        ahead in the same time base, or drift (sim-time stamps: PX4 then sees the
+                        Offboard stream as stale, FlyX run 5). Needs flight_interface running.
 """
 from __future__ import annotations
 
@@ -42,6 +46,25 @@ class Probe(Node):
                                  qos_profile_sensor_data)
         self.create_subscription(String, '/skybeta/state', lambda m: self.state.append((time.monotonic(), m.data)), 10)
         self.create_subscription(Clock, '/clock', self.on_clock, qos_profile_sensor_data)
+        # PX4 stamps (read-only): what flight_interface sends vs PX4's own clock
+        self.ocm, self.px4_odom, self.px4_topics = [], [], None
+        try:
+            import px4_msgs.msg as px4
+            try:
+                from skybeta_flight_interface.topics import fmu_topic
+                topics = (fmu_topic('in', 'offboard_control_mode', 'OffboardControlMode'),
+                          fmu_topic('out', 'vehicle_odometry', 'VehicleOdometry'))
+            except Exception:
+                topics = ('/fmu/in/offboard_control_mode', '/fmu/out/vehicle_odometry')
+            self.px4_topics = topics
+            self.create_subscription(px4.OffboardControlMode, topics[0],
+                                     lambda m: self.ocm.append((time.monotonic(), int(m.timestamp))),
+                                     qos_profile_sensor_data)
+            self.create_subscription(px4.VehicleOdometry, topics[1],
+                                     lambda m: self.px4_odom.append((time.monotonic(), int(m.timestamp))),
+                                     qos_profile_sensor_data)
+        except ImportError:
+            pass
         if a.depth_topic:
             info = a.depth_topic.rsplit('/', 1)[0] + '/camera_info'
             self.create_subscription(Image, a.depth_topic, self.on_depth, qos_profile_sensor_data)
@@ -131,6 +154,17 @@ def main(argv=None):
             res('OK' if node.info else 'WARN', f'camera_info: {node.info}' if node.info else 'no camera_info')
     # ---- clock
     res('OK', f"/clock: {'present (simulator: use_sim_time:=true)' if node.clock else 'absent (real time)'}")
+    # ---- Offboard stamps vs PX4's clock (review 2, finding 4)
+    if node.px4_topics is None:
+        res('WARN', 'Offboard stamps: px4_msgs not importable, not checked')
+    elif not node.ocm:
+        res('WARN', f'{node.px4_topics[0]}: no messages', 'flight_interface not running yet: stamps not checked')
+    elif not node.px4_odom:
+        res('WARN', f'{node.px4_topics[1]}: no messages', 'cannot compare the Offboard stamps with PX4 time')
+    else:
+        from dronehacks_pathplan.runtime import offboard_stamp_verdict
+        level, msg = offboard_stamp_verdict(node.ocm, node.px4_odom)
+        res(level, 'Offboard stamps vs PX4 time', msg)
     node.destroy_node()
     rclpy.try_shutdown()
     bad = results.count('FAIL')

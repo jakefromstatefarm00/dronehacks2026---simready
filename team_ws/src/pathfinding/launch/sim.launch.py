@@ -7,11 +7,21 @@ if the simulator lacks one. For the FlyX lab, the Isaac/Pegasus profile, or a Ga
     ros2 launch dronehacks_pathplan sim.launch.py shadow:=true pilot:=none   # plan only
 
 What runs:
-  * pathplan.launch.py with use_sim_time:=true and allow_mode_request:=true (sim only)
+  * pathplan.launch.py with allow_mode_request:=true (sim only). Our node runs on sim time
+    (use_sim_time:=true: the run limit is in sim time); flight_interface stays on the WALL clock
+    (interface_use_sim_time:=false), because its OffboardControlMode/TrajectorySetpoint stamps
+    are what PX4 checks for Offboard loss. PX4 v1.16's uxrce_dds_client maps an incoming stamp
+    with min(stamp - timesync offset, PX4 now): with UXRCE_DDS_SYNCT=0 (the lockstep sims) a Unix
+    wall-clock stamp is clamped to PX4's own time on arrival (always fresh while the stream
+    flows), with SYNCT=1 it is converted exactly (the agent's clock is the wall clock). Sim-time
+    stamps are compared raw against PX4's lockstep clock and read as stale (FlyX run 5).
   * sim_pilot (pilot:=drone_like|direct): arms and lands like the safety pilot. SIM ONLY.
-  * Sky Beta's px4_odom_bridge, only if nothing publishes /fmu/in/vehicle_visual_odometry yet
-    (vision_bridge:=auto). The FlyX lab runs its own bridge: then this starts nothing extra.
-    Never two bridges: PX4 would fuse every vision sample twice.
+  * vision bridge: none by default (vision_bridge:=false). The FlyX lab and the Isaac profile
+    bridge vision into PX4 themselves. vision_bridge:=true starts Sky Beta's px4_odom_bridge for
+    a simulator that has none; auto starts it only if nothing publishes
+    /fmu/in/vehicle_visual_odometry within 3 s -- a one-off count that can miss a slow bridge, so
+    avoid it. Never two bridges: PX4 would fuse every vision sample twice (our node then
+    refuses READY: two publishers on that topic count as "another program").
 Never started here: an XRCE agent (the simulator has one), cuVSLAM (the simulator has one).
 """
 from launch import LaunchDescription
@@ -33,7 +43,9 @@ PASS_THROUGH = [            # forwarded to pathplan.launch.py
     ('launch_xy_m', '[-2.515, 0.914]', 'launch mark, course frame'),
     ('launch_heading_course_rad', '1.5707963', 'heading on the mark'),
     ('frame_latch', 'arm', 'arm | slam_origin'),
-    ('use_sim_time', 'true', 'the simulator publishes /clock'),
+    ('use_sim_time', 'true', 'our node on sim time (the simulator publishes /clock): the run limit'),
+    ('interface_use_sim_time', 'false',
+     'flight_interface clock. false: PX4 sees its Offboard stamps as fresh (see the docstring)'),
     ('allow_mode_request', 'true', 'SIM ONLY: lets pilot:=direct request Offboard'),
     ('odometry_topic', '/visual_slam/tracking/odometry', 'VIO odometry'),
 ]
@@ -93,7 +105,8 @@ def generate_launch_description():
         DeclareLaunchArgument('pilot', default_value='drone_like',
                               description='drone_like (Altitude -> arm -> Position) | direct | none'),
         DeclareLaunchArgument('pilot_delay_s', default_value='3.0', description='READY this long before arming'),
-        DeclareLaunchArgument('vision_bridge', default_value='auto', description='auto | true | false'),
+        DeclareLaunchArgument('vision_bridge', default_value='false',
+                              description='false (the lab bridges vision itself) | true | auto (one-off count: avoid)'),
     ]
     drone = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(PathJoinSubstitution(

@@ -98,6 +98,29 @@ def match_pose(poses, stamp, stats, match_s=DEPTH_MATCH_S):
     return pos, q, 0.0
 
 
+# ---------------------------------------------------------------------- graph check (1 Hz)
+VISION_TOPIC = '/fmu/in/vehicle_visual_odometry'
+
+
+def foreign_publishers(counts, setpoint_topic, own_setpoint=True):
+    """'' or why someone else is commanding / feeding PX4, from {topic: publisher count}.
+    The mission treats it as a failed check: not READY on the ground, FAULT in the air."""
+    found = []
+    n = counts.get(setpoint_topic, 0) - (1 if own_setpoint else 0)
+    if n > 0:
+        found.append(f'{n} other publisher(s) on {setpoint_topic} (another competitor node?)')
+    n = counts.get('/skybeta/setpoint/twist', 0)
+    if n > 0:
+        found.append(f'{n} publisher(s) on /skybeta/setpoint/twist')
+    n = counts.get('/skybeta/state', 0)
+    if n > 1:
+        found.append(f'{n} flight interfaces running (/skybeta/state has {n} publishers)')
+    n = counts.get(VISION_TOPIC, 0)
+    if n > 1:           # two vision bridges (e.g. sim.launch's beside the lab's): PX4 fuses every sample twice
+        found.append(f'{n} vision bridges ({VISION_TOPIC} has {n} publishers): stop one')
+    return '; '.join(found)
+
+
 # ---------------------------------------------------------------------- planning thread
 class PlanningLoop:
     """Calls ``step()`` every ``period_s`` on its own thread. A planning step waits on the planner

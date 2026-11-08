@@ -49,7 +49,12 @@ NODE_ARGS = [
     ('yaw_rate_max', '0.25', 'rad/s cap on the commanded heading', None),
     ('journal_dir', '', 'where runs go; empty = <team_ws>/runs', str),
     ('planner_process', 'true', 'planner in its own process', None),
-    ('use_sim_time', 'false', 'true in a simulator that publishes /clock (both nodes)', None),
+    ('use_sim_time', 'false', 'our node: true in a simulator that publishes /clock (run limit in sim time)', None),
+    ('interface_use_sim_time', 'false',
+     "flight_interface: keep false (wall clock) on the drone AND in simulators. Its "
+     "OffboardControlMode stamps are what PX4 checks for Offboard loss; sim-time stamps read as "
+     "stale (FlyX run 5), wall-clock ones are converted (UXRCE_DDS_SYNCT=1) or clamped to PX4 "
+     "time on arrival (SYNCT=0) by PX4 v1.16's uxrce_dds_client", None),
     ('competitor', 'true', 'false: flight_interface only', None),
 ]
 
@@ -69,9 +74,9 @@ def generate_launch_description():
         output='screen',
         emulate_tty=True,
         parameters=[{**{n: LaunchConfiguration(n) for n, _, _ in INTERFACE_ARGS},
-                     'use_sim_time': LaunchConfiguration('use_sim_time')}],
+                     'use_sim_time': LaunchConfiguration('interface_use_sim_time')}],
     )
-    ours = [(n, t) for n, _, _, t in NODE_ARGS if n != 'competitor']
+    ours = [(n, t) for n, _, _, t in NODE_ARGS if n not in ('competitor', 'interface_use_sim_time')]
     competitor = Node(
         package='dronehacks_pathplan',
         executable='pathplan_node',
